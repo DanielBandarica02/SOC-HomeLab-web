@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Escenario 02 · Insider hasta dominio comprometido</title>
+<meta name="description" content="Cadena de ataque desde un implante Sliver en una workstation de dominio hasta el control total de Active Directory: beacon HTTPS, bypass de UAC, volcado de LSASS, movimiento lateral por SMB y compromiso del DC.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Ir al contenido</a>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="index.html">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2.5 20 6v6.2c0 4.4-3.2 7.9-8 9.3-4.8-1.4-8-4.9-8-9.3V6l8-3.5Z" stroke="#3ad8c6" stroke-width="1.6"/>
+        <path d="M8.2 12.1l2.6 2.6 5-5" stroke="#6b93ff" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <span>SOC HomeLab<small>soclab.local</small></span>
+    </a>
+    <div class="nav-links">
+      <a href="infraestructura.html">Infraestructura</a>
+      <a href="ataque-01.html">Escenario 01</a>
+      <a href="ataque-02.html" aria-current="page">Escenario 02</a>
+      <a href="reglas.html">Detecciones</a>
+    </div>
+    <div class="nav-right">
+      <span class="nav-tag">12 técnicas · 7 tácticas</span>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-head" id="contenido">
+  <div class="wrap">
+    <p class="crumb"><a href="index.html">SOC HomeLab</a> / escenarios / 02 · Windows · VLAN Corp</p>
+    <h1>Insider con admin local hasta dominio comprometido</h1>
+    <p class="lead">Un desarrollador con administrador local en su propia máquina ejecuta un implante entregado por un vector de phishing simulado. Desde ese beacon HTTPS, y sin volver a tocar un teclado en ningún host comprometido, el atacante enumera el dominio, volca credenciales de memoria, pivota al controlador de dominio y demuestra control total de Active Directory.</p>
+    <div class="metarow">
+      <span class="chip">Sliver C2 v1.7.3 · HTTPS 443</span>
+      <span class="chip">7 fases</span>
+      <span class="chip">12 técnicas ATT&amp;CK</span>
+      <span class="chip">10 tácticas detectadas</span>
+      <span class="chip">987 alertas</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="layout">
+  <aside class="toc">
+    <h4>Fases</h4>
+    <ol>
+      <li><a href="#prep">Modelo de amenaza</a></li>
+      <li><a href="#f1">1 · Ejecución</a></li>
+      <li><a href="#f2">2 · Mando y control</a></li>
+      <li><a href="#f3">3 · Escalada (fallida)</a></li>
+      <li><a href="#f4">4 · Descubrimiento</a></li>
+      <li><a href="#f5">5 · Volcado de LSASS</a></li>
+      <li><a href="#f6">6 · Movimiento lateral</a></li>
+      <li><a href="#f7">7 · Dominio comprometido</a></li>
+      <li><a href="#volumen">8 · Volumen y sobre-mapeo</a></li>
+      <li><a href="#comparativa">9 · Comparativa con el 01</a></li>
+      <li><a href="#lecciones">10 · Lecciones</a></li>
+    </ol>
+  </aside>
+
+  <main>
+
+  <section id="resumen">
+    <h2><span class="hn">00</span>Qué cambia respecto al escenario 01</h2>
+    <p>No se repite el mismo ataque en otro sistema. El escenario 01 entraba por fuerza bruta contra Linux en la VLAN de desarrollo; este opera por completo en el entorno Windows y Active Directory de la VLAN corporativa, y usa un framework de C2 moderno con transporte HTTPS. El cambio de terreno es deliberado: demuestra ingeniería de detección en los dos mundos.</p>
+
+    <figure>
+      <svg viewBox="0 0 980 240" role="img" aria-label="Cadena del ataque: Kali establece un beacon HTTPS en la workstation corporativa, desde ahí vuelca LSASS, monta el recurso administrativo del controlador de dominio por SMB, copia el implante y obtiene un segundo beacon en el DC" style="width:100%;height:auto;color:#e9eef7;background:#0a0e16">
+        <defs>
+          <marker id="b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 1 8 5 0 9" fill="none" stroke="currentColor" stroke-opacity=".55" stroke-width="1.5" stroke-linecap="round"/>
+          </marker>
+        </defs>
+        <rect x="20" y="78" width="200" height="84" rx="10" fill="#101723" stroke="#ff6070" stroke-opacity=".35"/>
+        <text x="40" y="106" font-size="13" font-weight="700" fill="currentColor">Kali · Sliver C2</text>
+        <text x="40" y="124" font-size="10.5" fill="currentColor" fill-opacity=".55" font-family="JetBrains Mono, monospace">10.10.66.10</text>
+        <text x="40" y="140" font-size="10.5" fill="currentColor" fill-opacity=".55" font-family="JetBrains Mono, monospace">listener https/443</text>
+
+        <rect x="390" y="78" width="200" height="84" rx="10" fill="#101723" stroke="currentColor" stroke-opacity=".2"/>
+        <text x="410" y="106" font-size="13" font-weight="700" fill="currentColor">WS-CORP-01</text>
+        <text x="410" y="124" font-size="10.5" fill="currentColor" fill-opacity=".55" font-family="JetBrains Mono, monospace">10.10.10.20</text>
+        <text x="410" y="140" font-size="10.5" fill="currentColor" fill-opacity=".55" font-family="JetBrains Mono, monospace">SOCLAB\dbandarica</text>
+
+        <rect x="760" y="78" width="200" height="84" rx="10" fill="#101723" stroke="#3ad8c6" stroke-opacity=".35"/>
+        <text x="780" y="106" font-size="13" font-weight="700" fill="currentColor">DC01</text>
+        <text x="780" y="124" font-size="10.5" fill="currentColor" fill-opacity=".55" font-family="JetBrains Mono, monospace">10.10.10.10</text>
+        <text x="780" y="140" font-size="10.5" fill="currentColor" fill-opacity=".55" font-family="JetBrains Mono, monospace">SOCLAB\Administrator</text>
+
+        <line x1="220" y1="112" x2="382" y2="112" stroke="currentColor" stroke-opacity=".4" stroke-width="1.4" marker-end="url(#b)"/>
+        <text x="301" y="102" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6" font-family="JetBrains Mono, monospace">1 · beacon https 443</text>
+        <line x1="382" y1="136" x2="224" y2="136" stroke="currentColor" stroke-opacity=".4" stroke-width="1.4" marker-end="url(#b)"/>
+        <text x="303" y="152" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6" font-family="JetBrains Mono, monospace">5 · volcado de LSASS descargado</text>
+
+        <line x1="590" y1="112" x2="752" y2="112" stroke="currentColor" stroke-opacity=".4" stroke-width="1.4" marker-end="url(#b)"/>
+        <text x="671" y="102" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6" font-family="JetBrains Mono, monospace">6 · SMB C$ + implante</text>
+
+        <path d="M860 78 V40 H120 V78" fill="none" stroke="#3ad8c6" stroke-opacity=".6" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#b)"/>
+        <text x="490" y="32" text-anchor="middle" font-size="10" fill="#3ad8c6" font-family="JetBrains Mono, monospace">7 · segundo beacon desde el controlador de dominio</text>
+
+        <path d="M430 162 V200 H550 V162" fill="none" stroke="currentColor" stroke-opacity=".3" stroke-width="1.4" marker-end="url(#b)"/>
+        <text x="490" y="218" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".55" font-family="JetBrains Mono, monospace">2-4 · bypass de UAC (falla) + enumeración del dominio</text>
+      </svg>
+      <figcaption>La cadena completa se ejecuta a través del canal de C2: no hay acceso interactivo a ninguno de los dos hosts después de la ejecución inicial del implante.</figcaption>
+    </figure>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Táctica</th><th>Técnica</th><th>Descripción</th><th>Fase</th></tr></thead>
+        <tbody>
+          <tr><td>Execution</td><td class="mono">T1204.002</td><td>User Execution: Malicious File</td><td>1</td></tr>
+          <tr><td>Command and Control</td><td class="mono">T1071.001</td><td>Application Layer Protocol: Web Protocols</td><td>2</td></tr>
+          <tr><td>Command and Control</td><td class="mono">T1573</td><td>Encrypted Channel</td><td>2</td></tr>
+          <tr><td>Command and Control</td><td class="mono">T1105</td><td>Ingress Tool Transfer</td><td>1, 6</td></tr>
+          <tr><td>Defense Evasion</td><td class="mono">T1548.002</td><td>Bypass UAC — intentado y fallido</td><td>3</td></tr>
+          <tr><td>Discovery</td><td class="mono">T1082 · T1087.002 · T1016 · T1018</td><td>Sistema, cuentas de dominio, red, sistemas remotos</td><td>4</td></tr>
+          <tr><td>Credential Access</td><td class="mono">T1003.001</td><td>OS Credential Dumping: LSASS Memory</td><td>5</td></tr>
+          <tr><td>Lateral Movement</td><td class="mono">T1021.002</td><td>Remote Services: SMB / Admin Shares</td><td>6</td></tr>
+          <tr><td>Persistence</td><td class="mono">T1136.002</td><td>Create Account: Domain Account — demostrado y revertido</td><td>7</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="prep">
+    <h2><span class="hn">—</span>Modelo de amenaza: insider con administrador local</h2>
+    <p>El escenario modela el vector que domina los incidentes en pymes: <strong>un usuario de dominio con privilegios de administrador local en su propia máquina</strong>. No es una mala configuración introducida para el laboratorio; es una decisión de modelado que refleja que muchas organizaciones conceden admin local a desarrolladores o perfiles técnicos para que instalen software sin pasar por IT.</p>
+
+    <p>El privilegio se provisiona por GPO (<span class="mono">GPO_Workstation_LocalAdmins</span>), que añade el grupo de dominio <span class="mono">WorkstationAdmins</span> al grupo local de administradores mediante Restricted Groups. El usuario <span class="mono">dbandarica</span> se mete en ese grupo en AD. Es el patrón corporativo estándar: la pertenencia a un grupo de dominio controla el admin local, gestionado de forma centralizada y no host por host.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Parámetro del implante</th><th>Valor</th></tr></thead>
+        <tbody>
+          <tr><td>Framework</td><td>Sliver v1.7.3</td></tr>
+          <tr><td>Transporte</td><td class="mono">HTTPS / 443</td></tr>
+          <tr><td>Modo</td><td>Beacon (asíncrono)</td></tr>
+          <tr><td>Intervalo / jitter</td><td class="mono">60 s · 30 %</td></tr>
+          <tr><td>Arquitectura y formato</td><td class="mono">windows/amd64 · .exe (~36 MB)</td></tr>
+          <tr><td>Nombre de sesión</td><td class="mono">SELECTIVE_DISCONNECTION</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>El implante se sirve desde Kali con un servidor HTTP de Python en el puerto 80, se descarga en <span class="mono">WS-CORP-01</span> con <span class="mono">Invoke-WebRequest</span> y se renombra a <span class="mono">update.exe</span> en la carpeta de descargas del usuario, modelando un payload disfrazado de actualización de software legítima. Snapshot <span class="mono">pre-scenario2-insider</span> en WS-CORP-01 y DC01.</p>
+  </section>
+
+  <section id="f1">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 1</span><strong>Ejecución</strong><span class="mitre">T1204.002 · User Execution</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>En la narrativa, <span class="mono">dbandarica</span> ha recibido un correo de phishing con un adjunto, lo descarga y lo ejecuta desde una sesión de PowerShell elevada «porque necesita permisos de administrador para instalarse».</p>
+
+        <figure>
+          <img src="img-atk/02-insider/01-payload-execution.webp" alt="Descarga y ejecución del implante desde PowerShell elevado" loading="lazy">
+          <figcaption>El proceso arranca en silencio: sin ventana visible, sin salida en consola, como se comporta un implante moderno.</figcaption>
+        </figure>
+
+        <h4>Detección</h4>
+        <p>139 alertas en 20 minutos, concentradas en dos picos que corresponden a los dos intentos de ejecución: el primero bloqueado por Defender, el segundo con éxito.</p>
+
+        <div class="callout find">
+          <h4>Detección principal · Regla 92213, nivel 15</h4>
+          <p>La regla nativa de Sysmon <strong>92213</strong> disparó en el instante en que el implante se escribió en disco, al detectar el ejecutable cayendo en una carpeta clasificada como «usada habitualmente por malware» (el directorio de descargas del usuario). Nivel 15, la severidad máxima del ruleset nativo, mapeada a <span class="mono">T1105 — Ingress Tool Transfer</span>, grupos <span class="mono">sysmon, sysmon_eid11_detections, windows</span>. <strong>Es la detección de mayor severidad de todo el escenario y no necesitó ninguna ingeniería propia.</strong></p>
+        </div>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/02-insider/07-wazuh-detection-15.webp" alt="Alerta de nivel 15 por ejecutable soltado en carpeta usada por malware" loading="lazy">
+            <figcaption>Regla 92213 en el panel.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/09-wazuh-detection-15-3.webp" alt="Detalle del evento de la regla 92213" loading="lazy">
+            <figcaption>Detalle del evento Sysmon Event ID 11.</figcaption>
+          </figure>
+        </div>
+
+        <div class="callout warn">
+          <h4>Detección secundaria · Regla 61638, nivel 12 — y por qué es un falso positivo de contexto</h4>
+          <p>Sysmon marcó <span class="mono">dllhost.exe</span> (COM Surrogate) como proceso sospechoso durante la elevación de PowerShell, mapeado a <span class="mono">T1055 — Process Injection</span>. La actividad la provocó la <strong>elevación legítima de UAC</strong> («Ejecutar como administrador»), no un ataque. El mismo patrón COM se usa en técnicas de bypass de UAC, así que Wazuh lo marca con independencia de la intención. Es un verdadero positivo por patrón y un falso positivo por contexto: exactamente el tipo de alerta que un L1 tiene que aprender a triar.</p>
+        </div>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/02-insider/04-wazuh-detection-12.webp" alt="Alerta de nivel 12 sobre dllhost.exe" loading="lazy">
+            <figcaption>Nivel 12 sobre <span class="mono">dllhost.exe</span>.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/02-wazuh-detection.webp" alt="Vista de las alertas generadas durante la fase de ejecución" loading="lazy">
+            <figcaption>Los dos picos de los dos intentos de ejecución.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f2">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 2</span><strong>Mando y control</strong><span class="mitre">T1071.001 · T1573</span></div>
+      <div class="phase-body">
+        <h4>Ejecución</h4>
+        <p>Menos de 60 segundos después de arrancar <span class="mono">update.exe</span>, la consola de Sliver registra el primer <em>check-in</em>. El beacon confirma un contexto elevado: <span class="mono">SOCLAB\dbandarica</span> con nivel de integridad <em>High</em>, <span class="mono">BUILTIN\Administradores</span> como grupo habilitado y <span class="mono">SeDebugPrivilege</span> activo. <strong>A partir de aquí todas las fases se ejecutan a través del beacon</strong>, sin acceso directo por teclado a WS-CORP-01.</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/02-insider/10-sliver-connection.webp" alt="Consola de Sliver registrando el primer check-in del beacon" loading="lazy">
+            <figcaption>Primer check-in del beacon sobre HTTPS.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/11-sliver-elevated-privilege.webp" alt="Contexto elevado del beacon con SeDebugPrivilege" loading="lazy">
+            <figcaption>Integridad alta y <span class="mono">SeDebugPrivilege</span>: el admin local se traduce en capacidad para tocar memoria de otros procesos.</figcaption>
+          </figure>
+        </div>
+
+        <p>El beacon funciona en su patrón configurado: un check-in cada 42–78 segundos (60 s de base ± 30 % de jitter). Cada uno recoge los comandos en cola, los ejecuta localmente y devuelve resultados en el siguiente. Esa latencia de dos ciclos es característica del C2 real y es el comportamiento al que apuntan las reglas de detección.</p>
+
+        <h4>Detección</h4>
+        <p>Las conexiones HTTPS a <span class="mono">10.10.66.10:443</span> quedaron registradas por Sysmon como Event ID 3 (Network Connection). Wazuh clasificó varios eventos de creación de proceso como «Executable file created by powershell» (nivel 6) y «Powershell process created an executable file in Windows root folder» (nivel 9, Ingress Tool Transfer).</p>
+
+        <div class="callout find">
+          <h4>Hueco de detección identificado</h4>
+          <p>La comunicación de C2 en sí, las llamadas HTTPS periódicas, <strong>no se marcó como anómala por ninguna regla nativa</strong>. Es lo esperable: distinguir <em>beaconing</em> de tráfico HTTPS legítimo exige o inspección TLS a nivel de red o análisis conductual de la periodicidad de las conexiones, y Wazuh no hace ninguna de las dos de forma nativa. Es una oportunidad de regla propia sobre conexiones salientes periódicas desde procesos que no son navegadores.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f3">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 3</span><strong>Escalada de privilegios — fallida</strong><span class="mitre">T1548.002 · Bypass UAC</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>Pasar de integridad media (token de admin filtrado) a integridad alta (token completo) sin lanzar un aviso visible de UAC.</p>
+
+        <h4>Ejecución</h4>
+        <div class="cmd">
+          <div class="cmd-bar"><span>técnica 1 · fodhelper.exe</span><button type="button">copiar</button></div>
+          <pre>reg add "HKCU\Software\Classes\ms-settings\Shell\Open\command" /ve /d "C:\Users\dbandarica\Downloads\update.exe" /f
+reg add "HKCU\Software\Classes\ms-settings\Shell\Open\command" /v DelegateExecute /t REG_SZ /d "" /f
+
+# después se ejecuta fodhelper.exe esperando que lea la clave secuestrada
+# y lance el implante con token elevado → no se genera ningún proceso elevado</pre>
+        </div>
+        <p>La técnica 2, <span class="mono">computerdefaults.exe</span>, reutiliza la misma clave (ambos binarios leen <span class="mono">ms-settings</span>). También falla en silencio: sin ventana, sin aviso de UAC, sin error. Las dos se abandonan y se limpia la clave con <span class="mono">reg delete "HKCU\Software\Classes\ms-settings" /f</span>.</p>
+
+        <div class="callout find">
+          <h4>Hallazgo defensivo · Windows 11 24H2 bloquea esta familia de bypasses</h4>
+          <p>El fallo de los dos bypasses en la build 26200 es un resultado positivo que merece documentarse. Microsoft ha parcheado la familia de secuestros del registro <span class="mono">ms-settings</span> en las builds recientes de Windows 11. Un atacante que llegue a una workstation Windows 11 completamente actualizada se encuentra la misma barrera, y tendría que escalar por explotación de vulnerabilidad en lugar de por abuso de configuración.</p>
+          <p>Para dar continuidad al escenario, el implante se ejecutó desde una sesión de PowerShell ya elevada, con el usuario aceptando el aviso de UAC. Modela la realidad de que <span class="mono">dbandarica</span> tiene admin local y puede autoelevarse: el bypass solo habría automatizado lo que el usuario puede hacer a mano.</p>
+        </div>
+
+        <h4>Detección</h4>
+        <p>Aunque el bypass no funcionó, el intento dejó telemetría: Sysmon Event ID 13 (Registry Value Set) registró la creación de la clave <span class="mono">ms-settings\Shell\Open\command</span>, y Event ID 1 (Process Create) registró la ejecución de <span class="mono">fodhelper.exe</span> y <span class="mono">computerdefaults.exe</span> con <span class="mono">update.exe</span> como padre. Esa telemetría es la base de la regla propia <strong>100024</strong>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="f4">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 4</span><strong>Descubrimiento</strong><span class="mitre">T1082 · T1087.002 · T1016 · T1018</span></div>
+      <div class="phase-body">
+        <h4>Ejecución</h4>
+        <p>Todos los comandos pasan por el beacon con la sintaxis <span class="mono">execute -o cmd /c "..."</span>, lo que hace que <span class="mono">update.exe</span> genere <span class="mono">cmd.exe</span> como proceso hijo: una relación padre-hijo detectable.</p>
+
+        <div class="cmd">
+          <div class="cmd-bar"><span>enumeración del host</span><button type="button">copiar</button></div>
+          <pre>systeminfo         # versión de SO, pertenencia a dominio, hardware
+tasklist /svc      # procesos y servicios → identifica el PID de LSASS
+ipconfig /all      # red → confirma 10.10.10.20, DNS hacia DC01
+netstat -ano       # conexiones → confirma el agente Wazuh hacia 10.10.99.10:1514</pre>
+        </div>
+
+        <div class="cmd">
+          <div class="cmd-bar"><span>enumeración del dominio</span><button type="button">copiar</button></div>
+          <pre>net user /domain                      # Administrator, dbandarica, Guest, krbtgt
+net group "Domain Admins" /domain     # Administrator como único Domain Admin
+nltest /dclist:soclab                 # DC01.soclab.local (10.10.10.10), único DC
+net group "Domain Computers" /domain  # una sola workstation en el dominio
+net localgroup Administradores        # confirma el admin local vía WorkstationAdmins</pre>
+        </div>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/02-insider/13-enumeration-1.webp" alt="Salida de systeminfo a través del beacon" loading="lazy">
+            <figcaption><span class="mono">systeminfo</span> devuelto por el beacon.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/14-enumeration-2.webp" alt="Listado de procesos y servicios" loading="lazy">
+            <figcaption><span class="mono">tasklist /svc</span>: de aquí sale el PID de LSASS.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/15-enumeration-3.webp" alt="Enumeración de usuarios y grupos del dominio" loading="lazy">
+            <figcaption>Usuarios y grupos del dominio.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/17-enumeration-4.webp" alt="Identificación del controlador de dominio con nltest" loading="lazy">
+            <figcaption><span class="mono">nltest</span>: un único DC, que es el objetivo.</figcaption>
+          </figure>
+        </div>
+
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Inteligencia obtenida</th><th>Valor</th></tr></thead>
+            <tbody>
+              <tr><td>Dominio</td><td class="mono">soclab.local</td> </tr>
+              <tr><td>Controlador de dominio</td><td class="mono">DC01 · 10.10.10.10</td></tr>
+              <tr><td>Domain Admin</td><td>Administrator (único miembro)</td></tr>
+              <tr><td>Usuario actual</td><td class="mono">dbandarica</td></tr>
+              <tr><td>PID de LSASS</td><td class="mono">848</td></tr>
+              <tr><td>Agente Wazuh</td><td>Activo, reportando a <span class="mono">10.10.99.10:1514</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4>Detección</h4>
+        <p>723 alertas mapeadas a la táctica Discovery. Las firmas principales:</p>
+        <ul>
+          <li><strong>«Windows command prompt started by an abnormal process»</strong> (nivel 4): dispara cada vez que el beacon genera <span class="mono">cmd.exe</span>. Es la firma de un C2 operando.</li>
+          <li><strong>«Suspicious Windows cmd shell execution»</strong> (nivel 3) y <strong>«Discovery activity executed»</strong> (nivel 3) sobre <span class="mono">net user</span>, <span class="mono">nltest</span> y similares.</li>
+          <li><strong>«A C:\Windows\System32\net.exe binary was started by a Windows cmd shell»</strong> (nivel 3, mapeado a DLL Search Order Hijacking): mapeo erróneo, la actividad real es descubrimiento, no secuestro de DLL.</li>
+        </ul>
+        <p>El indicador conductual fiable no es ningún comando aislado, sino la cadena <span class="mono">update.exe → cmd.exe → systeminfo.exe / net.exe / nltest.exe</span>: un ejecutable no estándar en un directorio de usuario lanzando varias utilidades del sistema en sucesión rápida.</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/02-insider/19-wazuh-detection-2.webp" alt="Alertas de descubrimiento en el dashboard" loading="lazy">
+            <figcaption>Alertas de la fase de descubrimiento.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/20-wazuh-detection-3.webp" alt="Detalle de las alertas de cmd shell sospechoso" loading="lazy">
+            <figcaption>Padre anómalo en las alertas de shell.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f5">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 5</span><strong>Volcado de LSASS</strong><span class="mitre">T1003.001 · OS Credential Dumping</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>Volcar la memoria del proceso LSASS para extraer credenciales (hashes NTLM, tickets Kerberos y, con suerte, contraseñas en claro) de los usuarios que se han autenticado en WS-CORP-01.</p>
+
+        <h4>Ejecución</h4>
+        <p>Con el PID 848 identificado en la fase anterior, se ejecuta la técnica <span class="mono">comsvcs.dll MiniDump</span>. El volcado de 83 MB se descarga a Kali con el comando <span class="mono">download</span> del beacon y se procesa con <span class="mono">pypykatz</span>. El fichero se borra del host víctima justo después de la descarga para reducir la evidencia en disco.</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/02-insider/21-lsass-dump.webp" alt="Identificación del PID de LSASS desde el beacon" loading="lazy">
+            <figcaption>PID de LSASS desde el beacon.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/22-lsass-dump.webp" alt="Ejecución de la técnica comsvcs.dll MiniDump" loading="lazy">
+            <figcaption><span class="mono">comsvcs.dll MiniDump</span> contra el PID 848.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/23-lsass-dump.webp" alt="Verificación de que el fichero de volcado se ha escrito" loading="lazy">
+            <figcaption>Verificación: el volcado se escribió.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/25-lsass-dump.webp" alt="Salida de pypykatz procesando el volcado" loading="lazy">
+            <figcaption><span class="mono">pypykatz</span> sobre el volcado descargado.</figcaption>
+          </figure>
+        </div>
+
+        <h4>Análisis de credenciales</h4>
+        <p><strong>WDigest</strong> devolvió <span class="mono">password None</span> en todas las entradas: el cacheo de credenciales en claro de WDigest está deshabilitado por defecto en Windows moderno (<span class="mono">UseLogonCredential = 0</span>), así que de esa fuente no salió nada usable.</p>
+        <p><strong>Kerberos</strong> fue el hallazgo crítico. La caché de credenciales Kerberos contenía una contraseña <strong>en claro</strong>:</p>
+
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Usuario</th><th>Dominio</th><th>Credencial</th><th>Fuente</th></tr></thead>
+            <tbody>
+              <tr><td class="mono"><strong>dbandarica</strong></td><td class="mono">SOCLAB.LOCAL</td><td class="mono"><strong>Admin!23</strong></td><td>Caché Kerberos — en claro</td></tr>
+              <tr><td class="mono">dbandarica</td><td class="mono">SOCLAB.LOCAL</td><td class="mono">ed6aefe7…5d5f840</td><td>Clave AES256</td></tr>
+              <tr><td class="mono">DESKTOP-417M090$</td><td class="mono">soclab.local</td><td>hash de cuenta de máquina</td><td>NTLM / Kerberos</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout find">
+          <h4>El hallazgo que decide el escenario: reutilización de contraseñas</h4>
+          <p><span class="mono">Admin!23</span> se recuperó en claro de la caché Kerberos, no de WDigest y sin crackeo offline. Probada después contra la cuenta <strong>Administrator del dominio, resultó ser idéntica</strong>, lo que habilita el movimiento lateral al DC sin romper ningún hash.</p>
+          <p>Observación importante: la cuenta Administrator <strong>no estaba en el volcado</strong>, porque no se había autenticado en WS-CORP-01 desde el último reinicio. El ataque no triunfó por volcar directamente las credenciales del administrador, sino por la reutilización de contraseña entre <span class="mono">dbandarica</span> y <span class="mono">Administrator</span>.</p>
+        </div>
+
+        <h4>Detección</h4>
+        <p>El volcado de LSASS <strong>no produjo ninguna alerta dedicada de acceso a credenciales</strong>. Lo que disparó en esta fase fueron indicadores indirectos de la actividad del beacon, no de la técnica de volcado:</p>
+        <ul>
+          <li><strong>«Sysmon — Suspicious Process — svchost.exe»</strong> (Process Injection, nivel 12), unas 15 alertas. Corresponden a la inyección de Sliver en <span class="mono">svchost.exe</span>, no al volcado. El mapeo es técnicamente correcto, pero las alertas no identifican <em>qué hizo después</em> el proceso inyectado.</li>
+          <li><strong>«Possible DLL search order hijack»</strong> (nivel 6), unas 12 alertas, generadas por escrituras de DLL bajo <span class="mono">C:\Windows\SoftwareDistribution\Download\</span>: actividad legítima de Windows Update que infla el recuento de Defense Evasion sin corresponder a nada del atacante.</li>
+        </ul>
+
+        <div class="callout prob">
+          <h4>El hueco más grave del escenario</h4>
+          <p>Ninguna alerta identificó la línea de comandos <span class="mono">rundll32.exe</span> + <span class="mono">comsvcs.dll</span> + <span class="mono">MiniDump</span>, que es el indicador de mayor fidelidad del volcado. La ejecución de <span class="mono">rundll32.exe</span> sí quedó registrada por Sysmon Event ID 1 e ingerida por Wazuh, pero ninguna regla nativa casa con ese patrón para producir una alerta dedicada: <strong>el evento existía en el índice crudo y era invisible en el flujo operativo del L1</strong>. Lo cubre la regla propia <strong>100022</strong>.</p>
+        </div>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/02-insider/27-wazuh-detection-lsass.webp" alt="Alertas generadas durante la fase de volcado de LSASS" loading="lazy">
+            <figcaption>Lo que sí alertó: inyección en <span class="mono">svchost.exe</span>.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/28-wazuh-detection-lsass.webp" alt="Detalle de las alertas de inyección de proceso" loading="lazy">
+            <figcaption>Nivel 12, pero sobre la inyección y no sobre el volcado.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f6">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 6</span><strong>Movimiento lateral al controlador de dominio</strong><span class="mitre">T1021.002 · T1105</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>Con la credencial de la fase 5, pivotar de WS-CORP-01 a DC01 montando el recurso administrativo, transfiriendo el beacon y ejecutándolo en remoto. Todo desde el beacon existente, sin tocar un teclado en el host objetivo.</p>
+
+        <div class="callout warn">
+          <h4>Detalle operativo</h4>
+          <p>El modo beacon de Sliver exige <strong>cuádruple barra invertida</strong> en las rutas UNC por el doble escapado en la capa de transporte del C2. Es el tipo de friccion operativa que ralentiza a un atacante de verdad.</p>
+        </div>
+
+        <h4>Ejecución</h4>
+        <div class="figs">
+          <figure>
+            <img src="img-atk/02-insider/30-lateral-movement.webp" alt="Montaje del recurso administrativo C$ del controlador de dominio por SMB" loading="lazy">
+            <figcaption><span class="mono">net use \\DC01\C$</span> con <span class="mono">Admin!23</span>: autenticación correcta sobre SMB (tcp/445) como Administrator del dominio.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/31-lateral-movement.webp" alt="Copia del implante al controlador de dominio" loading="lazy">
+            <figcaption>El binario del beacon se copia a <span class="mono">C:\update.exe</span> del DC a través de la sesión SMB autenticada.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/32-lateral-movement.webp" alt="Ejecución remota del implante con Invoke-Command y PSCredential" loading="lazy">
+            <figcaption>Ejecución remota con <span class="mono">Invoke-Command</span> y <span class="mono">PSCredential</span> explícito: WinRM (tcp/5985) como <span class="mono">SOCLAB\Administrator</span>.</figcaption>
+          </figure>
+        </div>
+
+        <p>El segundo beacon hace check-in a los pocos segundos. El comando <span class="mono">beacons</span> confirma dos sesiones HTTPS activas contra el mismo servidor de C2:</p>
+
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Beacon</th><th>Host</th><th>Dirección remota</th><th>Usuario</th><th>Proceso</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">2d563dc3</td><td>DESKTOP-417M090</td><td class="mono">10.10.10.20:56734</td><td class="mono">SOCLAB\dbandarica</td><td class="mono">…\Downloads\update.exe (4036)</td></tr>
+              <tr><td class="mono">49cb86f3</td><td>DC01</td><td class="mono">10.10.10.10:54704</td><td class="mono">SOCLAB\Administrator</td><td class="mono">C:\update.exe (2712)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4>Detección</h4>
+        <p>El movimiento lateral generó telemetría considerable en DC01:</p>
+        <ul>
+          <li><strong>Regla 92213, nivel 15</strong>: disparó en DC01 al escribirse <span class="mono">update.exe</span> en <span class="mono">C:\</span>. La alerta más severa de la fase. Mapeada a T1105 (Ingress Tool Transfer), correcto técnicamente aunque el contexto operativo era movimiento lateral. La misma regla produjo además una avalancha de falsos positivos de <span class="mono">cleanmgr.exe</span> escribiendo DLLs en carpetas temporales: limpieza de disco legítima de Windows inflando el recuento.</li>
+          <li><strong>«Executable dropped in Windows root folder»</strong> (nivel 6): un ejecutable en la raíz del sistema de ficheros es inusual, y esta alerta lo marcó correctamente.</li>
+          <li><strong>«Windows Logon Success»</strong> (nivel 3): varios logons de red (tipo 3) desde WS-CORP-01 con la cuenta Administrator, que confirman la autenticación SMB y la sesión WinRM posterior.</li>
+          <li><strong>«Special privileges assigned to new logon»</strong> (nivel 3): la sesión de Administrator recibió privilegios elevados.</li>
+          <li>En el origen, <strong>«Possible suspicious access to Windows admin shares»</strong> (nivel 3) fue <strong>la única alerta que mapeó directamente a T1021.002</strong>.</li>
+        </ul>
+
+        <div class="callout find">
+          <h4>Oportunidad de regla propia</h4>
+          <p>El montaje de un recurso administrativo desde una workstation, seguido de la caída de un ejecutable en el destino, forma un patrón de movimiento lateral de alta confianza. La regla propia <strong>100023</strong> apunta a esa secuencia (un proceso anómalo accediendo a <span class="mono">\\*\C$</span> o <span class="mono">\\*\ADMIN$</span>) y correlaciona los dos eventos en una única alerta de nivel 12.</p>
+        </div>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/02-insider/33-wazuh-detection.webp" alt="Alertas en DC01 durante el movimiento lateral" loading="lazy">
+            <figcaption>DC01 domina el volumen: ~650 de las 987 alertas de 24 h.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/34-wazuh-detection.webp" alt="Panel de cobertura MITRE mostrando Lateral Movement en ambos hosts" loading="lazy">
+            <figcaption>Lateral Movement con 27 alertas en WS-CORP-01 y 29 en DC01: refleja correctamente actividad en origen y destino. Credential Access aparece con <strong>1</strong> alerta en toda la operación, lo que confirma el hueco de la fase 5.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f7">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 7</span><strong>Dominio comprometido</strong><span class="mitre">T1136.002 · Create Account: Domain</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>Demostrar control operativo completo del dominio desde el C2, confirmando que el movimiento lateral se traduce en acceso sin restricciones al controlador de dominio.</p>
+
+        <h4>Ejecución</h4>
+        <p>Se selecciona el beacon de DC01 (<span class="mono">49cb86f3</span>) como sesión activa, corriendo como Administrator del dominio: el contexto de mayor privilegio del entorno. Como prueba controlada de acceso de escritura a Active Directory, se crea un usuario de dominio y se borra inmediatamente.</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/02-insider/35-domain-compromise.webp" alt="Selección del beacon del controlador de dominio y confirmación de identidad" loading="lazy">
+            <figcaption>Identidad confirmada en el DC.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/36-domain-compromise.webp" alt="Enumeración de red desde el controlador de dominio" loading="lazy">
+            <figcaption>Enumeración desde dentro del DC.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/02-insider/37-domain-compromise.webp" alt="Creación y borrado de una cuenta de dominio como prueba de control" loading="lazy">
+            <figcaption>Crear y borrar cuentas de dominio desde el beacon confirma escritura sin restricciones en AD: cualquier operación disponible para un Domain Admin (manipulación de cuentas, modificación de GPO, forjado de tickets Kerberos, DCSync) era ejecutable sin acceso interactivo al host.</figcaption>
+          </figure>
+        </div>
+
+        <h4>Detección</h4>
+        <p>Los comandos del beacon en DC01 produjeron <strong>el mismo patrón de alertas de baja severidad</strong> que la fase 4 en WS-CORP-01: «Windows command prompt started by an abnormal process» (nivel 4) cuando el beacon generaba <span class="mono">cmd.exe</span> para <span class="mono">hostname</span>, <span class="mono">whoami</span> e <span class="mono">ipconfig</span>, y «Suspicious Windows cmd shell execution» (nivel 3).</p>
+
+        <div class="callout prob">
+          <h4>El problema de fondo</h4>
+          <p>Estas alertas eran <strong>operativamente indistinguibles</strong> de las docenas de alertas idénticas de la fase 4. Un analista de nivel 1 revisando el panel vería las mismas descripciones de regla en los dos hosts, sin ninguna indicación de que las de DC01 representaban un dominio comprometido en lugar de actividad de descubrimiento ordinaria.</p>
+          <p>Y más amplio: <strong>ninguna alerta, en ninguno de los dos hosts, identificó la cadena como una secuencia coherente</strong> — volcado de credenciales → montaje de recurso administrativo → transferencia de binario → ejecución remota → dominio comprometido. Cada paso produjo alertas aisladas de severidad baja o media que, individualmente, son indistinguibles de administración rutinaria. Las alertas de nivel 15 de la regla 92213 fueron la señal individual más fuerte, pero identificaban <em>staging</em> de ficheros, no el movimiento lateral que ese staging permitió. Correlacionar la cadena completa sigue siendo un reto que ninguna regla nativa resuelve.</p>
+        </div>
+
+        <p>De paso, el módulo de detección de vulnerabilidades de Wazuh identificó más de 20 CVE en la instalación de Windows Server 2022 de DC01, con niveles de 7 a 13. No las generó el ataque, pero aportan contexto: el controlador de dominio corría con vulnerabilidades conocidas sin parchear, explotables para escalada o persistencia adicional si el atacante hubiese querido acceso a largo plazo.</p>
+
+        <figure>
+          <img src="img-atk/02-insider/38-wazuh-detection.webp" alt="Alertas de CVE detectadas por el módulo de vulnerabilidades de Wazuh en el DC" loading="lazy">
+          <figcaption>Más de 20 CVE en DC01 detectadas por el módulo de vulnerabilidades.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="volumen">
+    <h2><span class="hn">08</span>987 alertas y el problema del sobre-mapeo</h2>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Regla</th><th>Nivel</th><th>Alertas</th></tr></thead>
+        <tbody>
+          <tr><td>Windows User Logoff</td><td><span class="lvl l3">3</span></td><td class="mono num">224</td></tr>
+          <tr><td>pfSense: firewall blocked a packet</td><td><span class="lvl l3">3</span></td><td class="mono num">193</td></tr>
+          <tr><td>Windows Logon Success</td><td><span class="lvl l3">3</span></td><td class="mono num">181</td></tr>
+          <tr><td>Sysmon — Suspicious Process — svchost.exe</td><td><span class="lvl l12">12</span></td><td class="mono num">69</td></tr>
+          <tr><td>Executable dropped in Windows root folder</td><td><span class="lvl l7">6</span></td><td class="mono num">54</td></tr>
+          <tr><td>Executable file dropped in folder commonly used by malware</td><td><span class="lvl l15">15</span></td><td class="mono num">34</td></tr>
+          <tr><td>Windows command prompt started by an abnormal process</td><td><span class="lvl l7">4</span></td><td class="mono num">18</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Cobertura MITRE por host</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Táctica</th><th>WS-CORP-01</th><th>DC01</th></tr></thead>
+        <tbody>
+          <tr><td>Privilege Escalation</td><td class="mono num">61</td><td class="mono num">244</td></tr>
+          <tr><td>Defense Evasion</td><td class="mono num">46</td><td class="mono num">239</td></tr>
+          <tr><td>Persistence</td><td class="mono num">30</td><td class="mono num">194</td></tr>
+          <tr><td>Initial Access</td><td class="mono num">2</td><td class="mono num">180</td></tr>
+          <tr><td>Command and Control</td><td class="mono num">15</td><td class="mono num">46</td></tr>
+          <tr><td>Execution</td><td class="mono num">30</td><td class="mono num">30</td></tr>
+          <tr><td>Lateral Movement</td><td class="mono num">27</td><td class="mono num">29</td></tr>
+          <tr><td>Discovery</td><td class="mono num">9</td><td class="mono num">5</td></tr>
+          <tr><td>Credential Access</td><td class="mono num">1</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout prob">
+      <h4>La observación más significativa del escenario</h4>
+      <p>El panel muestra <strong>244 alertas de Privilege Escalation y 194 de Persistence en DC01</strong>, cuando en el controlador de dominio <strong>no se ejecutó ni escalada ni persistencia</strong>. Esos recuentos vienen de eventos de arranque de Windows: cada creación de servicio de <span class="mono">svchost.exe</span> durante el inicio del sistema se mapea a Persistence (T1543 — Windows Service) y a Privilege Escalation por las reglas nativas. Igual pasa con parte de las 27 de Lateral Movement en WS-CORP-01, que incluyen eventos de «Executable dropped in Windows root folder» mapeados a Lateral Tool Transfer cuando la actividad real era creación local de ficheros.</p>
+      <p>Un analista que se fiara solo de los recuentos por táctica concluiría que ya había escalada, persistencia y movimiento lateral en marcha cuando en realidad solo había habido ejecución y descubrimiento. <strong>Lo que revela la actividad real son las descripciones de regla, no las etiquetas de táctica.</strong></p>
+    </div>
+  </section>
+
+  <section id="comparativa">
+    <h2><span class="hn">09</span>Comparativa con el escenario 01</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Métrica</th><th>01 · Linux / VLAN Dev</th><th>02 · Windows / VLAN Corp</th></tr></thead>
+        <tbody>
+          <tr><td>Alertas totales</td><td class="mono num">40.038</td><td class="mono num">987</td></tr>
+          <tr><td>Fuente dominante de ruido</td><td>Bloqueos de firewall (86,9 %)</td><td>Creación de servicios de Windows y eventos de DLL</td></tr>
+          <tr><td>Detección de mayor severidad</td><td>Reglas propias (nivel 10–14)</td><td>Regla nativa 92213 (nivel 15)</td></tr>
+          <tr><td>Reglas propias necesarias</td><td>8 (100013–100020)</td><td>4 (100022–100025): la cobertura nativa de Sysmon es fuerte</td></tr>
+          <tr><td>Tácticas MITRE detectadas</td><td>6</td><td>10</td></tr>
+          <tr><td>Hueco principal</td><td>Agregación de eventos de reconocimiento</td><td>Acceso a LSASS y correlación del lateral por SMB</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>La diferencia de fondo: el volumen del escenario 01 lo dominó una única fase de reconocimiento produciendo decenas de miles de eventos de firewall. El del escenario 02 lo domina el ruido de falsos positivos de operaciones legítimas de Windows mapeadas a tácticas de ataque. Los dos son problemas de fatiga de alertas, pero <strong>exigen soluciones distintas</strong>: reglas de agregación para el primero, reevaluación del mapeo de tácticas para el segundo.</p>
+
+    <h3>Las cuatro reglas que salieron de aquí</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Regla</th><th>Qué detecta</th><th>Táctica</th><th>Hueco que cierra</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">100022</td><td>Acceso a memoria de LSASS vía <span class="mono">rundll32</span> y <span class="mono">comsvcs.dll</span></td><td>Credential Access</td><td>La técnica exacta de la fase 5, invisible para el ruleset nativo</td></tr>
+          <tr><td class="mono">100023</td><td>Acceso a recurso administrativo SMB desde proceso no estándar</td><td>Lateral Movement</td><td><span class="mono">net use</span> a <span class="mono">\\host\C$</span> desde un padre anómalo</td></tr>
+          <tr><td class="mono">100024</td><td>Intento de bypass de UAC por modificación de <span class="mono">ms-settings</span></td><td>Defense Evasion</td><td>Sysmon Event 13 sobre la clave de fodhelper/computerdefaults</td></tr>
+          <tr><td class="mono">100025</td><td>Creación de cuenta de dominio desde una workstation</td><td>Persistence</td><td><span class="mono">net user /add /domain</span> en un host que no es DC</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="lecciones">
+    <h2><span class="hn">10</span>Lecciones</h2>
+    <ul>
+      <li><strong>Windows 11 24H2 es un objetivo bastante más duro.</strong> Los bypasses de UAC que han sido fiables durante años están parcheados, y LSA Protection bloquea por defecto el acceso a LSASS. Un atacante que llegue a una workstation Windows 11 completamente actualizada no puede escalar ni volcar credenciales de forma automatizada sin desactivar protecciones antes. Documentar estos fracasos con honestidad vale más que ocultarlos.</li>
+      <li><strong>La reutilización de contraseñas sigue siendo el vector más eficaz.</strong> El dominio entero cayó no por un exploit sofisticado, sino por una única credencial (<span class="mono">Admin!23</span>) compartida entre un usuario de dominio y el administrador del dominio. El tooling de seguridad más caro es irrelevante cuando un desarrollador y el domain admin usan la misma contraseña.</li>
+      <li><strong>Las reglas nativas cubren bien Windows y Sysmon, pero su mapeo MITRE engaña.</strong> La regla 92213 detectó el implante en los dos hosts sin ingeniería propia. A la vez, el panel de tácticas sobre-reporta Privilege Escalation (+244), Persistence (+194) y Lateral Movement (+27) mapeando actividad legítima de Windows a tácticas de ataque. El analista tiene que leer la descripción de la regla, no la etiqueta de táctica.</li>
+      <li><strong>La cadena padre-hijo del C2 es el indicador conductual más fuerte.</strong> Ni <span class="mono">systeminfo</span>, ni <span class="mono">net user</span>, ni <span class="mono">tasklist</span> son sospechosos por separado. Pero <span class="mono">update.exe → cmd.exe → net.exe</span> es una firma clara. Las reglas deben apuntar al proceso padre, no a los comandos individuales.</li>
+      <li><strong>El volcado de credenciales exige varias capas defensivas.</strong> Defender bloqueó el payload. PPL bloqueó el acceso a LSASS. Cada capa tuvo que ser vencida de forma independiente. En un entorno de producción con las dos activas, y sin la capacidad del operador de desactivarlas, la cadena se habría detenido en la fase 1 o en la 5. La defensa en profundidad funciona cuando todas las capas están realmente habilitadas.</li>
+      <li><strong>Operar a través de un beacon es lento y propenso a errores.</strong> Con 60 segundos de intervalo, cada comando tarda uno o dos minutos en devolver resultados, y el escapado de argumentos de Sliver se come las barras invertidas de las rutas Windows. Son restricciones reales que frenan al atacante, y una forma de fricción defensiva que las organizaciones subestiman.</li>
+    </ul>
+
+    <div class="prevnext">
+      <a class="btn btn-ghost btn-sm" href="ataque-01.html">← Escenario 01</a>
+      <a class="btn btn-primary btn-sm" href="reglas.html">Catálogo de reglas de detección →</a>
+    </div>
+  </section>
+
+  </main>
+</div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-note">
+      <span>Entorno de laboratorio aislado. Todas las credenciales mostradas son sintéticas y pertenecen a VMs que ya no existen.</span>
+    </div>
+  </div>
+</footer>
+<script src="js/site.js"></script>
+</body>
+</html>

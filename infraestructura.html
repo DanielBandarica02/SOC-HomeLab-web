@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Montaje del lab</title>
+<meta name="description" content="Procedimiento de montaje del SOC HomeLab: pfSense con cuatro segmentos, Active Directory, endpoints de desarrollo, stack Wazuh fuera de banda y DMZ con Kali.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Ir al contenido</a>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="index.html">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2.5 20 6v6.2c0 4.4-3.2 7.9-8 9.3-4.8-1.4-8-4.9-8-9.3V6l8-3.5Z" stroke="#3ad8c6" stroke-width="1.6"/>
+        <path d="M8.2 12.1l2.6 2.6 5-5" stroke="#6b93ff" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <span>SOC HomeLab<small>soclab.local</small></span>
+    </a>
+    <div class="nav-links">
+      <a href="infraestructura.html" aria-current="page">Infraestructura</a>
+      <a href="ataque-01.html">Escenario 01</a>
+      <a href="ataque-02.html">Escenario 02</a>
+      <a href="reglas.html">Detecciones</a>
+    </div>
+    <div class="nav-right">
+      <span class="nav-tag">7 VMs · 1 host</span>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-head" id="contenido">
+  <div class="wrap">
+    <p class="crumb"><a href="index.html">SOC HomeLab</a> / writeup / infraestructura</p>
+    <h1>Montaje del lab, de pfSense a la DMZ</h1>
+    <p class="lead">Procedimiento real de construcción del laboratorio: perímetro, identidad, endpoints, stack SOC y entorno adversario. Cada bloque incluye los parámetros que se eligieron, la validación que se usó para darlo por bueno, y el fallo que apareció por el camino.</p>
+    <div class="metarow">
+      <span class="chip">pfSense CE 2.8.1-RELEASE</span>
+      <span class="chip">Windows Server 2022</span>
+      <span class="chip">Ubuntu 24.04</span>
+      <span class="chip">Wazuh 4.14.5</span>
+      <span class="chip">Kali Linux</span>
+      <span class="chip">VirtualBox</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="layout">
+  <aside class="toc">
+    <h4>En esta página</h4>
+    <ol>
+      <li><a href="#contexto">Contexto</a></li>
+      <li><a href="#pfsense">1 · Perímetro: pfSense</a></li>
+      <li><a href="#ad">2 · VLAN 10: Active Directory</a></li>
+      <li><a href="#dev">3 · VLAN 20: desarrollo</a></li>
+      <li><a href="#soc">4 · VLAN 99: stack SOC</a></li>
+      <li><a href="#agentes">5 · Agentes y telemetría</a></li>
+      <li><a href="#syslog">6 · Syslog de pfSense</a></li>
+      <li><a href="#dashboard">7 · Dashboard de L1</a></li>
+      <li><a href="#kali">8 · VLAN 66: adversario</a></li>
+      <li><a href="#cierre">9 · Estado final</a></li>
+    </ol>
+  </aside>
+
+  <main>
+
+  <section id="contexto">
+    <h2><span class="hn">00</span>Contexto</h2>
+    <p class="lede">El laboratorio se monta en seis fases secuenciales, y las cinco primeras son infraestructura. Este documento cubre ese recorrido completo: desde la primera NIC virtual hasta el momento en que cinco fuentes de telemetría alimentan un panel operativo y el adversario está listo para atacar.</p>
+
+    <p>El principio que ordena todo el montaje es la <strong>segmentación estricta</strong>. Los cuatro segmentos arrancan sin ninguna regla de paso, y cada permiso que se añade después corresponde a una necesidad concreta del modelo de amenaza. Eso tiene un efecto directo sobre la detección: al forzar que todo el tráfico entre zonas pase por pfSense, cada intento de cruce no autorizado se convierte en un log, y cada log en una posible alerta.</p>
+
+    <p>El segundo principio es el <strong>orden</strong>. La telemetría tiene que estar validada antes de lanzar el primer ataque, porque si no el laboratorio se convierte en teatro: ejecutas la técnica y no la detectas por falta de logs, no por falta de criterio. Por eso cada bloque de este writeup termina con una validación explícita, y por eso el entorno del atacante es lo último que se despliega.</p>
+
+    <h3>Lo que cubre este documento</h3>
+    <ul>
+      <li><strong>Perímetro</strong> — pfSense con seis interfaces, plan de direccionamiento, acceso de administración y las reglas que materializan el default-deny.</li>
+      <li><strong>Identidad</strong> — Windows Server 2022 promovido a controlador de dominio, DNS integrado, estructura de OU y la workstation corporativa unida al dominio.</li>
+      <li><strong>Endpoints</strong> — dos máquinas de desarrollo heterogéneas y fuera del dominio, con la segmentación verificada en los dos sentidos.</li>
+      <li><strong>Stack SOC</strong> — Wazuh all-in-one en una VLAN fuera de banda, cuatro agentes, Sysmon, auditd, el syslog de pfSense con decoder propio y el panel de triaje.</li>
+      <li><strong>Adversario</strong> — Kali en su DMZ, con las reglas de firewall usadas como modeladores de capacidad.</li>
+    </ul>
+
+    <div class="callout">
+      <h4>Nota sobre las «VLANs»</h4>
+      <p>VirtualBox no soporta etiquetado 802.1Q nativo como lo hacen Proxmox o ESXi. Las VLANs del diagrama están implementadas como <strong>redes internas del hipervisor</strong>. Desde el punto de vista de pfSense es funcionalmente equivalente, porque sigue siendo el único router entre ellas, pero conceptualmente no son VLANs reales. El compromiso se asume de forma explícita.</p>
+    </div>
+  </section>
+
+  <section id="pfsense">
+    <h2><span class="hn">01</span>Perímetro: pfSense con seis interfaces</h2>
+    <p>La VM de pfSense se crea con seis NIC virtuales: una en NAT para la salida a Internet, cuatro en redes internas (una por segmento) y una en host-only para administrar el firewall antes de que exista cualquier endpoint. Todos los adaptadores usan <strong>Intel PRO/1000 MT Desktop (82540EM)</strong> porque FreeBSD tiene driver nativo para ese modelo, y aparecen en el sistema como <span class="mono">em0</span> a <span class="mono">em5</span>.</p>
+
+    <figure>
+      <img src="img-lab/phase2/01-network-adapters.webp" alt="Configuración de adaptadores de red de la VM de pfSense en VirtualBox" loading="lazy">
+      <figcaption>Seis adaptadores: NAT, cuatro redes internas y host-only. Modo promiscuo «Permitir todo» en los internos porque Suricata necesita ver cada trama que atraviesa el firewall, incluido el tráfico broadcast y multicast en el que se apoyan técnicas como el envenenamiento ARP.</figcaption>
+    </figure>
+
+    <h3>Asignación de interfaces y direccionamiento</h3>
+    <p>Desde la consola de pfSense, opción <span class="mono">1) Assign Interfaces</span> para mapear las NIC, y opción <span class="mono">2) Set interface(s) IP address</span> para direccionar. LAN ya venía provisionada por el asistente de instalación; OPT1, OPT2 y OPT3 se configuran a mano.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Interfaz</th><th>Nombre en el lab</th><th>IPv4 / máscara</th><th>DHCP</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">em0</td><td>WAN</td><td class="mono">DHCP — 10.0.2.15</td><td>—</td></tr>
+          <tr><td class="mono">em1</td><td>VLAN10 · Corporativa</td><td class="mono">10.10.10.1/24</td><td>.100–.200</td></tr>
+          <tr><td class="mono">em2</td><td>VLAN20 · Desarrollo</td><td class="mono">10.10.20.1/24</td><td>.100–.200</td></tr>
+          <tr><td class="mono">em3</td><td>VLAN66 · Adversario</td><td class="mono">10.10.66.1/24</td><td>.100–.200</td></tr>
+          <tr><td class="mono">em4</td><td>VLAN99 · SOC</td><td class="mono">10.10.99.1/24</td><td>.100–.200</td></tr>
+          <tr><td class="mono">em5</td><td>MGMT · host-only</td><td class="mono">192.168.56.10/24</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>El rango DHCP se deja en <span class="mono">.100–.200</span> de forma deliberada: <span class="mono">.10–.99</span> queda libre para los activos con IP fija (DC, workstations, Wazuh, Kali), que son los que aparecen escritos en reglas de firewall y en reglas de Wazuh. Si esas IP bailasen, habría que reescribir ambos conjuntos.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/phase2/02-interfaces.webp" alt="Consola de pfSense mostrando las interfaces asignadas con sus IPs" loading="lazy">
+        <figcaption>Interfaces asignadas y direccionadas desde la consola.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase2/03-dashboard-interfaces.webp" alt="Dashboard de pfSense con las interfaces renombradas" loading="lazy">
+        <figcaption>Renombradas en <span class="mono">Interfaces → Description</span> para que las pestañas de reglas y los logs sean legibles de un vistazo.</figcaption>
+      </figure>
+    </div>
+
+    <h3>Arranque del GUI por la interfaz host-only</h3>
+    <p>El GUI de pfSense solo responde a hosts que estén dentro de una de sus redes, y en este punto no existe ninguna VM en ningún segmento. La solución es una red host-only: el adaptador del equipo anfitrión en <span class="mono">192.168.56.1/24</span> y <span class="mono">em5</span> en <span class="mono">192.168.56.10/24</span>. Esta interfaz queda documentada como vía de administración y se restringe por regla.</p>
+
+    <div class="callout prob">
+      <h4>Fallo 1 · Bloqueo total en la interfaz nueva</h4>
+      <p>Tras direccionar <span class="mono">em5</span>, la consola anunció la URL del GUI y el navegador daba timeout. La prueba por capas aclaró el escenario: desde pfSense, <span class="mono">ping 192.168.56.1</span> respondía, y el host confirmaba su propia IP con <span class="mono">ipconfig</span>, pero <span class="mono">ping 192.168.56.10</span> desde el host no contestaba. L2 y L3 funcionaban, así que el bloqueo era del filtro.</p>
+      <p>pfSense aplica default-deny en todas las interfaces salvo LAN, que lleva una regla anti-lockout automática. MGMT no tenía ninguna regla. Se desactivó el filtro temporalmente con <span class="mono">pfctl -d</span> desde el shell, se entró al GUI, se creó la regla permanente y se reactivó con <span class="mono">pfctl -e</span>. <span class="mono">pfctl -d</span> no es un workaround estable: pfSense vuelve a habilitar el filtro al aplicar cambios o reiniciar servicios.</p>
+    </div>
+
+    <figure>
+      <img src="img-lab/phase2/04-host-only-firewall-rule.webp" alt="Regla de firewall en la interfaz MGMT permitiendo el acceso del host al propio firewall" loading="lazy">
+      <figcaption>Regla permanente en <span class="mono">Firewall → Rules → MGMT</span>: origen <span class="mono">192.168.56.1</span>, destino <em>This Firewall (self)</em>, cualquier protocolo. VLAN 10, 20, 66 y 99 se quedan sin reglas de paso en esta fase: postura default-deny.</figcaption>
+    </figure>
+
+    <h3>Rendimiento de red en un entorno virtualizado</h3>
+
+    <div class="callout prob">
+      <h4>Fallo 2 · Descargas lentas y con cortes</h4>
+      <p>El rendimiento de red era irregular: ráfagas rápidas seguidas de parones, errores de checksum en <span class="mono">Status → System Logs → System</span> y retransmisiones TCP en transferencias largas.</p>
+      <p>La causa son los <em>offloads</em> de la NIC (Checksum Offload, TSO/TSO4/TSO6 y LRO), pensados para delegar trabajo en el silicio de una tarjeta física. En un entorno virtualizado el «hardware» es el driver virtual del anfitrión, cuya implementación suele ser incompleta, y el invitado acaba emitiendo checksums mal calculados o tramas sobredimensionadas que se descartan aguas abajo, forzando retransmisiones.</p>
+      <p>Se desactivaron los tres en <span class="mono">System → Advanced → Networking</span> y se reinició para aplicarlo de forma consistente en todas las interfaces. Calcular los checksums en software cuesta algo más de CPU por paquete, pero elimina una clase entera de descartes por corrupción, y la ganancia por no retransmitir compensa de sobra ese coste.</p>
+    </div>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/phase2/08-network-settings.webp" alt="Opciones de red avanzadas de pfSense con los offloads desactivados" loading="lazy">
+        <figcaption>Los tres offloads desactivados.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase2/06-ping-verification.webp" alt="Ping a 8.8.8.8 desde la consola de pfSense con cuatro respuestas" loading="lazy">
+        <figcaption><span class="mono">ping 8.8.8.8</span> desde la consola: NAT de salida operativo, cuatro respuestas por debajo de 50 ms.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="ad">
+    <h2><span class="hn">02</span>VLAN 10: Active Directory y la workstation corporativa</h2>
+    <p>VLAN 10 es la zona corporativa y aporta la capa de identidad de la que dependen el resto de escenarios: un Windows Server 2022 promovido a controlador de dominio, raíz del bosque <span class="mono">soclab.local</span>, con DNS integrado, una jerarquía de OU que imita una pyme y un usuario sin privilegios que será la identidad del día a día en los ataques.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>VM</th><th>vCPU</th><th>RAM</th><th>Disco</th><th>Red</th></tr></thead>
+        <tbody>
+          <tr><td>SOC-10-AD (DC01)</td><td>2</td><td>4 GB</td><td>60 GB</td><td class="mono">internal-vlan10-corp</td></tr>
+          <tr><td>SOC-10-WinCorp (WS-CORP-01)</td><td>2</td><td>4 GB</td><td>60 GB</td><td class="mono">internal-vlan10-corp</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>IP estática y DNS apuntando a sí mismo</h3>
+    <p>El DC es el único host de VLAN 10 con IP fija y el único con el rol de DNS. El adaptador se pasa de DHCP a estático desde <span class="mono">ncpa.cpl</span>, y el servidor DNS se configura apuntando al propio host. Se usa la IP real (<span class="mono">10.10.10.10</span>) y no <span class="mono">127.0.0.1</span> porque es el patrón coherente con entornos multi-DC, donde los controladores se apuntan entre sí por IP.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/phase3/01-static-ip.webp" alt="Configuración IPv4 estática en el controlador de dominio" loading="lazy">
+        <figcaption><span class="mono">10.10.10.10/24</span>, gateway <span class="mono">10.10.10.1</span>, DNS a sí mismo.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase3/02-ping-validation.webp" alt="Validación de conectividad con ping al gateway y a Internet" loading="lazy">
+        <figcaption>Conectividad validada <em>antes</em> de instalar ningún rol.</figcaption>
+      </figure>
+    </div>
+
+    <h3>Promoción del bosque</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Parámetro</th><th>Valor</th></tr></thead>
+        <tbody>
+          <tr><td>Operación</td><td>Añadir un bosque nuevo</td></tr>
+          <tr><td>Dominio raíz</td><td class="mono">soclab.local</td></tr>
+          <tr><td>Nivel funcional de bosque y dominio</td><td>Windows Server 2016 (el máximo que ofrece el asistente)</td></tr>
+          <tr><td>DNS / Catálogo global</td><td>Habilitados</td></tr>
+          <tr><td>RODC</td><td>Deshabilitado</td></tr>
+          <tr><td>NetBIOS</td><td class="mono">SOCLAB</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Windows Server 2016 sigue siendo la línea base moderna: Microsoft no introdujo niveles funcionales nuevos con 2019 ni con 2022. Tras el reinicio, la pantalla de login pasa a mostrar <span class="mono">SOCLAB\Administrator</span> en lugar del administrador local, confirmación de que la cuenta migró al dominio.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/phase3/03-promotion-validation.webp" alt="Comandos de PowerShell validando identidad, DNS y servicio de tiempo tras la promoción" loading="lazy">
+        <figcaption>Identidad, DNS y hora operativos tras la promoción.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase3/04-structure-aduc.webp" alt="Estructura de unidades organizativas en Active Directory Users and Computers" loading="lazy">
+        <figcaption>OU <span class="mono">Corporate/Users</span>, <span class="mono">Workstations</span> y <span class="mono">Servers</span>, todas con protección contra borrado accidental.</figcaption>
+      </figure>
+    </div>
+
+    <p>El primer usuario de dominio, <span class="mono">dbandarica</span>, se crea en <span class="mono">Corporate/Users</span> y <strong>no se mete en ningún grupo privilegiado</strong>. Los ataques que parten de un usuario estándar son mucho más representativos de la respuesta a incidentes real que los que empiezan con credenciales de Domain Admin en la mano.</p>
+
+    <h3>El DHCP tiene que anunciar el DC como DNS</h3>
+    <p>Por defecto, el servidor DHCP de VLAN 10 anuncia los mismos DNS que tiene configurados pfSense globalmente (<span class="mono">1.1.1.1</span> y <span class="mono">8.8.8.8</span>). Una workstation con ese lease no puede resolver <span class="mono">_ldap._tcp.soclab.local</span> ni el resto de registros SRV que exige el <em>domain join</em>. Se fija el campo <span class="mono">DNS Servers</span> del ámbito a <span class="mono">10.10.10.10</span>.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/phase3/05-dns-modification-pfsense.webp" alt="Campo DNS Servers del ámbito DHCP de VLAN10 apuntando al controlador de dominio" loading="lazy">
+        <figcaption><span class="mono">Services → DHCP Server → VLAN10</span>.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase3/06-ipconfig-validation.webp" alt="Salida de ipconfig en Windows 11 mostrando el lease DHCP y el DNS del dominio" loading="lazy">
+        <figcaption><span class="mono">ipconfig</span> en la workstation: el lease y el DNS empujado llegan bien.</figcaption>
+      </figure>
+    </div>
+
+    <h3>Unión al dominio</h3>
+    <p>La workstation se renombra y se une al dominio en una sola operación desde <span class="mono">System Properties → Computer Name → Change</span>. Tras el reinicio se inicia sesión de forma interactiva con <span class="mono">SOCLAB\dbandarica</span>, y el objeto de equipo se mueve a la OU <span class="mono">Corporate/Workstations</span>.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/phase3/08-domain-join.webp" alt="Diálogo de unión al dominio soclab.local desde Windows 11" loading="lazy">
+        <figcaption>Renombrado y unión al dominio en una sola operación.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase3/09-domain-validation.webp" alt="Comandos whoami y gpresult confirmando la participación en el dominio" loading="lazy">
+        <figcaption><span class="mono">whoami</span>, <span class="mono">$env:LOGONSERVER</span> y <span class="mono">gpresult</span> confirman participación completa en el dominio.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="dev">
+    <h2><span class="hn">03</span>VLAN 20: dos endpoints heterogéneos fuera del dominio</h2>
+    <p>La zona de desarrollo monta un Windows 11 Pro (<span class="mono">WS-DEV-01</span>, usuario <span class="mono">khernandez</span>, RDP habilitado) y un Ubuntu Desktop 24.04 (<span class="mono">ws-dev-02</span>, usuario <span class="mono">arodriguez</span>, OpenSSH y UFW). Ninguno está unido a <span class="mono">soclab.local</span>: la separación de zonas se refuerza también en la capa de identidad, no solo en la de red.</p>
+
+    <p>La heterogeneidad es intencionada. Limitarse a Windows dejaría sin practicar la detección en Linux (auditd, journald, eventos SSH), el movimiento multiplataforma Linux → Windows, y las técnicas propias de entornos de desarrollo: claves SSH expuestas, repositorios con secretos, contenedores como vector.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/phase4/01-ipv4-win-manual.webp" alt="Configuración IPv4 manual en Windows 11 de desarrollo" loading="lazy">
+        <figcaption><span class="mono">10.10.20.10</span>, DNS al gateway de VLAN 20 y no al DC.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase4/02-ipv4-ubuntu-manual.webp" alt="Configuración IPv4 manual en Ubuntu desde el panel de red" loading="lazy">
+        <figcaption><span class="mono">10.10.20.20</span> por NetworkManager, como lo haría un desarrollador en su portátil.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase4/03-ip-a-validation.webp" alt="Salida de ip a en Ubuntu" loading="lazy">
+        <figcaption><span class="mono">ip a</span>: dirección aplicada.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase4/05-ping-validation.webp" alt="Validación de conectividad con ping desde Ubuntu" loading="lazy">
+        <figcaption>Gateway e Internet alcanzables.</figcaption>
+      </figure>
+    </div>
+
+    <h3>Línea base de firewall</h3>
+    <p>Un segmento nuevo en pfSense no alcanza nada hasta que se le añaden reglas. Se pone una única regla de paso en <span class="mono">Firewall → Rules → VLAN20</span> para salir a Internet y a los servicios de pfSense. El tráfico inter-VLAN sigue denegado: <strong>no hay ninguna regla que permita a VLAN 20 llegar a VLAN 10, 66 o 99</strong>, salvo el camino de telemetría hacia el SIEM que se abrirá en la fase siguiente.</p>
+
+    <figure>
+      <img src="img-lab/phase4/06-firewall-vlan20.webp" alt="Reglas de firewall de VLAN 20 en pfSense" loading="lazy">
+      <figcaption>Una regla de paso y nada más.</figcaption>
+    </figure>
+
+    <h3>Validación de la segmentación</h3>
+    <p>La separación se comprueba en los dos sentidos: dentro del segmento la conectividad funciona, y hacia la zona corporativa no hay camino.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/phase4/09-intra-vlan-connectivity.webp" alt="Pruebas de conectividad entre los dos endpoints de VLAN 20" loading="lazy">
+        <figcaption>Dentro del segmento, ambos sentidos funcionan.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase4/10-intra-vlan-segmentation.webp" alt="Timeout al intentar alcanzar VLAN 10 desde VLAN 20" loading="lazy">
+        <figcaption>Hacia VLAN 10, timeout. El resultado esperado: pfSense descarta el tráfico por default-deny.</figcaption>
+      </figure>
+    </div>
+
+    <div class="callout prob">
+      <h4>Fallo 3 · El resolutor de pfSense se cuelga en modo recursivo</h4>
+      <p>Ninguno de los dos endpoints resolvía nombres externos: <span class="mono">apt update</span> se quedaba colgado, <span class="mono">nslookup</span> contra el gateway daba timeout y winget no descargaba nada. ICMP a <span class="mono">10.10.20.1</span> y a <span class="mono">8.8.8.8</span> sí funcionaba, así que el problema estaba localizado en DNS.</p>
+      <p>La prueba decisiva fue que <span class="mono">nslookup google.com 1.1.1.1</span> desde el cliente resolvía, pero <span class="mono">Diagnostics → DNS Lookup</span> desde el propio pfSense también daba timeout: no era un problema de binding, era que pfSense no resolvía. Por defecto el DNS Resolver (Unbound) trabaja en modo <strong>recursivo</strong> y consulta directamente a los servidores raíz. Con el lab anidado detrás del NAT del hipervisor y de un router doméstico, esas consultas quedaban interceptadas o limitadas por el ISP.</p>
+      <p>Solución: forzar Unbound a <strong>modo forwarding</strong> en <span class="mono">Services → DNS Resolver → General Settings</span> para que delegue en los upstream configurados globalmente.</p>
+    </div>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/phase4/07-troubleshooting.webp" alt="Activación del modo forwarding en el DNS Resolver de pfSense" loading="lazy">
+        <figcaption>Modo forwarding activado.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/phase4/08-troubleshooting-2.webp" alt="Resolución DNS correcta tras el cambio" loading="lazy">
+        <figcaption>Resolución correcta desde el cliente tras el cambio.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="soc">
+    <h2><span class="hn">04</span>VLAN 99: Wazuh fuera de banda</h2>
+    <p>El stack SOC es un único Ubuntu Server 24.04 (<span class="mono">wazuh-srv</span>, <span class="mono">10.10.99.10</span>) con Wazuh 4.14 en modo all-in-one: manager, indexer y dashboard en la misma VM.</p>
+
+    <p>La intención arquitectónica es la <strong>alcanzabilidad asimétrica</strong>: todos los segmentos vigilados deben poder empujar telemetría por tcp/1514 y enrolarse por tcp/1515, pero Wazuh no puede iniciar conexiones de vuelta. Si el SIEM se compromete, no debe convertirse en punto de pivote hacia producción.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Recurso</th><th>Valor</th></tr></thead>
+        <tbody>
+          <tr><td>vCPU / RAM / disco</td><td>4 · 8 GB · 80 GB</td></tr>
+          <tr><td>Red</td><td class="mono">internal-vlan99-soc</td></tr>
+          <tr><td>IP</td><td class="mono">10.10.99.10/24</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Red por Netplan</h3>
+    <div class="cmd">
+      <div class="cmd-bar"><span>/etc/netplan/00-installer-config.yaml</span><button type="button">copiar</button></div>
+      <pre>network:
+  version: 2
+  ethernets:
+    enp0s3:
+      dhcp4: no
+      addresses:
+        - 10.10.99.10/24
+      routes:
+        - to: default
+          via: 10.10.99.1
+      nameservers:
+        addresses:
+          - 10.10.99.1
+          - 1.1.1.1</pre>
+    </div>
+
+    <h3>Firewall de host antes de instalar, no después</h3>
+    <p>El orden no es casual. El instalador de Wazuh modifica el comportamiento de red de forma implícita (enlaza servicios a interfaces, abre puertos internos), así que añadir UFW a posteriori arriesga bloquear un puerto que Wazuh espera abierto. Establecer la línea base primero significa que cualquier problema posterior es atribuible al instalador y no a un cambio del sistema base.</p>
+
+    <div class="cmd">
+      <div class="cmd-bar"><span>wazuh-srv · línea base</span><button type="button">copiar</button></div>
+      <pre>sudo apt update &amp;&amp; sudo apt upgrade -y
+sudo apt install -y curl wget gnupg ufw
+
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp comment 'SSH admin'
+sudo ufw enable
+sudo ufw status verbose</pre>
+    </div>
+
+    <figure>
+      <img src="img-lab/01-wazuh/01-ufw-verbose.webp" alt="Salida de ufw status verbose mostrando solo SSH permitido" loading="lazy">
+      <figcaption>En esta fase solo SSH entrante. Los puertos de Wazuh (1514, 1515, 443, 9200) se abren después de verificar el despliegue.</figcaption>
+    </figure>
+
+    <h3>Reglas en pfSense para el modelo fuera de banda</h3>
+    <p>Hay que configurar tres categorías de tráfico y nada más:</p>
+    <ul>
+      <li><strong>VLAN 99 hacia fuera</strong> — el host de Wazuh necesita Internet (apt, el instalador) y los servicios de pfSense, pero tiene bloqueado iniciar conexiones hacia los demás segmentos del lab.</li>
+      <li><strong>Agentes hacia Wazuh</strong> — los endpoints de VLAN 10 y VLAN 20 necesitan llegar a <span class="mono">10.10.99.10</span> en los puertos 1514 y 1515.</li>
+      <li><strong>Host de administración hacia el dashboard</strong> — HTTPS a <span class="mono">10.10.99.10:443</span> a través de la red host-only.</li>
+    </ul>
+    <p>Las reglas de agente se colocan explícitamente arriba de cada lista en lugar de confiar en las reglas genéricas de salida, para que el tráfico de telemetría sea visible y distinguible en los logs del firewall.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/01-wazuh/02-pfsense-rules-vlan99.webp" alt="Reglas de firewall de la VLAN 99 con pasos y bloqueos" loading="lazy">
+        <figcaption>VLAN 99: 3 reglas de paso y 4 de bloqueo, que es lo que materializa el modelo fuera de banda.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/01-wazuh/03-pfsense-rules-vlan10.webp" alt="Regla de telemetría de agentes en la VLAN 10" loading="lazy">
+        <figcaption>VLAN 10: camino de enrolamiento y telemetría.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/01-wazuh/04-pfsense-rules-vlan20.webp" alt="Regla de telemetría de agentes en la VLAN 20" loading="lazy">
+        <figcaption>VLAN 20: el mismo camino para los endpoints de desarrollo.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/01-wazuh/05-pfsense-rules-MGMT.webp" alt="Regla en MGMT permitiendo al host llegar al dashboard de Wazuh" loading="lazy">
+        <figcaption>MGMT: la regla de administración existente solo llegaba al propio firewall; el dashboard necesita la suya.</figcaption>
+      </figure>
+    </div>
+
+    <h3>Instalación all-in-one</h3>
+    <div class="cmd">
+      <div class="cmd-bar"><span>wazuh-srv · instalación</span><button type="button">copiar</button></div>
+      <pre>curl -sO https://packages.wazuh.com/4.14/wazuh-install.sh
+chmod +x wazuh-install.sh
+sudo bash wazuh-install.sh -a</pre>
+    </div>
+    <p>Unos 20 minutos. El flag <span class="mono">-a</span> selecciona el modo all-in-one y genera la PKI interna que cubre el TLS mutuo entre manager, indexer y dashboard. La salida final imprime la URL y unas credenciales de <span class="mono">admin</span> generadas aleatoriamente.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/01-wazuh/06-wazuh-dashboard.webp" alt="Primer acceso al dashboard de Wazuh desde el host" loading="lazy">
+        <figcaption>Primer acceso a <span class="mono">https://10.10.99.10</span> desde el host, aceptando el certificado autofirmado de la CA interna del instalador.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/01-wazuh/08-segmentation-validation.webp" alt="Timeouts al intentar alcanzar VLAN 10 y 20 desde el servidor Wazuh" loading="lazy">
+        <figcaption>La validación que importa: <strong>desde</strong> Wazuh, ping a VLAN 10 y 20 da timeout. Si respondiera, existiría una regla de salida mal puesta.</figcaption>
+      </figure>
+    </div>
+
+    <div class="callout prob">
+      <h4>Fallo 4 · pfSense deja pasar, UFW no</h4>
+      <p>Tras la instalación, el dashboard escuchaba correctamente en <span class="mono">0.0.0.0:443</span> y respondía a <span class="mono">curl -k https://localhost</span>, pero desde <span class="mono">WS-CORP-01</span> el navegador daba timeout y <span class="mono">Test-NetConnection -Port 443</span> devolvía <span class="mono">TcpTestSucceeded: False</span>. El ping sí llegaba, el socket estaba en LISTEN y el servicio estaba sano localmente: el bloqueo tenía que estar entre el TCP que llega al host y el socket, es decir, UFW.</p>
+      <p>El instalador de Wazuh no toca las reglas de UFW; asume que el operador abre los puertos como parte del despliegue. La lección: en una red con defensa en profundidad, firewall de perímetro y firewall de host son planos de control independientes, y un paquete que pasa pfSense no pasa UFW automáticamente.</p>
+      <div class="cmd" style="margin-top:18px">
+        <div class="cmd-bar"><span>corrección</span><button type="button">copiar</button></div>
+        <pre>sudo ufw allow 443/tcp  comment 'Wazuh dashboard HTTPS'
+sudo ufw allow 1514/tcp comment 'Wazuh agent telemetry'
+sudo ufw allow 1515/tcp comment 'Wazuh agent enrollment'</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="agentes">
+    <h2><span class="hn">05</span>Cuatro agentes, dos sistemas operativos, dos capas de telemetría</h2>
+    <p>Los agentes se despliegan con el asistente <span class="mono">Server Management → Agents → Deploy new agent</span>, que genera la URL del MSI y la línea de <span class="mono">msiexec</span> con el nombre de agente, la IP del manager y el grupo ya rellenos.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Host</th><th>Zona</th><th>Modelo de identidad</th><th>Por qué entra</th></tr></thead>
+        <tbody>
+          <tr><td>DC01</td><td>VLAN 10</td><td>Controlador de dominio</td><td>Genera los eventos Kerberos y NTLM de todo el dominio. La fuente de telemetría de mayor valor en un entorno Windows.</td></tr>
+          <tr><td>WS-CORP-01</td><td>VLAN 10</td><td>Miembro de AD</td><td>Vista de endpoint de una workstation autenticada: recibe GPO, habla con el DC, genera actividad típica de usuario.</td></tr>
+          <tr><td>WS-DEV-01</td><td>VLAN 20</td><td>Workgroup</td><td>El caso de contraste: mismo agente, mismo dashboard, sin AD. Demuestra que el SIEM es independiente de la capa de identidad.</td></tr>
+          <tr><td>ws-dev-02</td><td>VLAN 20</td><td>Workgroup (Linux)</td><td>Cobertura multiplataforma con auditd.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="cmd">
+      <div class="cmd-bar"><span>PowerShell como administrador · DC01</span><button type="button">copiar</button></div>
+      <pre>Invoke-WebRequest -Uri https://packages.wazuh.com/4.x/windows/wazuh-agent-4.14.5-1.msi -OutFile $env:tmp\wazuh-agent; `
+  msiexec.exe /i $env:tmp\wazuh-agent /q WAZUH_MANAGER='10.10.99.10' WAZUH_AGENT_NAME='DC01'
+
+NET START WazuhSvc</pre>
+    </div>
+
+    <div class="callout prob">
+      <h4>Fallo 5 · El DC no resuelve nada que no sea su propio dominio</h4>
+      <p>La descarga del MSI falló en DC01 con <span class="mono">The remote name could not be resolved: 'packages.wazuh.com'</span>. <span class="mono">nslookup dc01.soclab.local</span> resolvía y <span class="mono">nslookup packages.wazuh.com</span> devolvía <em>Non-existent domain</em>: el DNS interno funcionaba y no había reenvío al exterior.</p>
+      <p>Cuando un controlador de dominio sirve DNS para su propio dominio, por defecto no tiene camino para resolver nombres fuera de él. Se añadió <span class="mono">10.10.10.1</span> como forwarder en <span class="mono">DNS → Properties → Forwarders</span>. Es silencioso en el momento de la promoción y solo aparece la primera vez que el DC actúa como cliente de Internet.</p>
+    </div>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/02-windows-agent/01-deploy-agent-wizard.webp" alt="Asistente de despliegue de agente del dashboard de Wazuh" loading="lazy">
+        <figcaption>El asistente genera el comando exacto por sistema operativo.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/02-windows-agent/04-dc01-agent-install-validation.webp" alt="DC01 en estado activo en la lista de agentes" loading="lazy">
+        <figcaption>DC01 en estado <span class="mono">Active</span>.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/02-windows-agent/08-dc01-agent-install-validation-2.webp" alt="Alerta de autenticación fallida generada desde DC01 visible en el dashboard" loading="lazy">
+        <figcaption>Validación sintética: <span class="mono">runas /user:soclab\fakeuser cmd.exe</span> fallando tres veces produce el 4625 esperado.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/02-windows-agent/10-wsdev01-agent-install-validation-2.webp" alt="Alerta equivalente generada desde WS-DEV-01" loading="lazy">
+        <figcaption>La misma prueba en VLAN 20 cruzando el firewall hacia VLAN 99.</figcaption>
+      </figure>
+    </div>
+
+    <h3>Sysmon en Windows: de SIEM a EDR</h3>
+    <p>Sin Sysmon, el agente reenvía solo los logs nativos de Security, System y Application, básicamente autenticación y servicios. Con Sysmon, el mismo agente entrega creación de procesos, conexiones de red por proceso, modificaciones de registro, creación de ficheros, carga de imágenes y consultas DNS.</p>
+
+    <p>Se usa la configuración de <strong>SwiftOnSecurity</strong>, estándar de facto: activamente mantenida, con listas blancas afinadas para suprimir el ruido legítimo de Windows sin perder los eventos que importan.</p>
+
+    <div class="cmd">
+      <div class="cmd-bar"><span>artefactos descargados una vez y copiados a cada host</span><button type="button">copiar</button></div>
+      <pre># https://download.sysinternals.com/files/Sysmon.zip
+# https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml
+
+C:\Sysmon\Sysmon64.exe -accepteula -i C:\Sysmon\sysmonconfig-export.xml
+
+Get-Service Sysmon64
+Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational' -MaxEvents 5</pre>
+    </div>
+
+    <p>El agente solo reenvía los canales que se le indican, y Sysmon escribe en uno propio. Hay que añadirlo de forma explícita en <span class="mono">C:\Program Files (x86)\ossec-agent\ossec.conf</span> y reiniciar el servicio con <span class="mono">net stop WazuhSvc &amp;&amp; net start WazuhSvc</span>.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/02-windows-agent/11-sysmon-install.webp" alt="Instalación de Sysmon desde PowerShell" loading="lazy">
+        <figcaption>Instalación con la configuración de SwiftOnSecurity.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/02-windows-agent/12-sysmon-install-validation.webp" alt="Servicio Sysmon64 en estado Running" loading="lazy">
+        <figcaption>Servicio <span class="mono">Sysmon64</span> corriendo y driver cargado.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/02-windows-agent/14-enabling-the-Sysmon-channel.webp" alt="Bloque localfile añadido al ossec.conf para el canal de Sysmon" loading="lazy">
+        <figcaption>Bloque <span class="mono">&lt;localfile&gt;</span> para <span class="mono">Microsoft-Windows-Sysmon/Operational</span>.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/02-windows-agent/15-enabling-the-Sysmon-channel-validation.webp" alt="Alerta de Sysmon en el dashboard tras ejecutar un comando de prueba" loading="lazy">
+        <figcaption><span class="mono">cmd.exe /c "whoami &amp;&amp; ipconfig"</span> produce la cadena de Event ID 1 con la relación padre-hijo intacta.</figcaption>
+      </figure>
+    </div>
+
+    <h3>auditd en Linux: la misma visibilidad, sin componente externo</h3>
+    <p>Este es el contraste pedagógico central. Windows necesita un componente externo para alcanzar visibilidad de nivel EDR; Linux ya expone lo equivalente de forma nativa a través del subsistema de auditoría del kernel. No hay que instrumentar nada, solo configurarlo. El mismo agente consume ambos, lo que demuestra que la capa de SIEM es independiente de cómo el sistema operativo expone sus eventos.</p>
+
+    <div class="cmd">
+      <div class="cmd-bar"><span>ws-dev-02</span><button type="button">copiar</button></div>
+      <pre>wget https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.14.5-1_amd64.deb \
+  &amp;&amp; sudo WAZUH_MANAGER='10.10.99.10' WAZUH_AGENT_NAME='ws-dev-02' dpkg -i ./wazuh-agent_4.14.5-1_amd64.deb
+
+sudo systemctl daemon-reload &amp;&amp; sudo systemctl enable --now wazuh-agent
+
+sudo apt install -y auditd audispd-plugins
+sudo augenrules --load &amp;&amp; sudo auditctl -l</pre>
+    </div>
+
+    <p>Las reglas de auditoría van en <span class="mono">/etc/audit/rules.d/soc-monitoring.rules</span>, deliberadamente pocas y enfocadas en escalada de privilegios y modificación de ficheros de identidad: suficientes para demostrar capacidad de detección, estrechas para no arrastrar el ruido de un ruleset tipo STIG. Las mismas claves (<span class="mono">priv_esc</span>, <span class="mono">identity_files</span>) aparecen después en los eventos, lo que permite filtrar por contenido en el SIEM.</p>
+
+    <h4>Tres fuentes en paralelo, tres decoders</h4>
+    <p>La configuración final del agente no se apoya en un único fichero con un único decoder, sino en tres caminos complementarios:</p>
+    <ul>
+      <li><span class="mono">/var/log/auth.log</span> → decoder <span class="mono">sudo</span> (ciclo de vida PAM, autenticaciones sudo)</li>
+      <li><span class="mono">/var/log/syslog</span> → decoder <span class="mono">syslog</span> (systemd)</li>
+      <li><span class="mono">/var/log/audit/audit.log</span> → decoder <span class="mono">auditd</span> (syscalls del kernel)</li>
+    </ul>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/03-linux-agent/03-auditd-status.webp" alt="systemctl status auditd activo" loading="lazy">
+        <figcaption><span class="mono">auditd</span> activo.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/03-linux-agent/04-auditd-rules.webp" alt="Reglas de auditoría personalizadas para SOC L1" loading="lazy">
+        <figcaption>Ruleset propio: escalada de privilegios y ficheros de identidad.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/03-linux-agent/05-extended-localfile-blocks.webp" alt="Tres bloques localfile en el ossec.conf del agente Linux" loading="lazy">
+        <figcaption>Tres bloques <span class="mono">&lt;localfile&gt;</span>, tres decoders trabajando en paralelo.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/03-linux-agent/01-ws-dev-02-agent-active.webp" alt="ws-dev-02 activo en la lista de agentes de Wazuh" loading="lazy">
+        <figcaption>Cuatro agentes activos: dos sistemas operativos, dos VLANs, dos modelos de identidad.</figcaption>
+      </figure>
+    </div>
+
+    <p>La verificación de que los tres caminos entregan eventos se hace con tres consultas en el dashboard: <span class="mono">decoder.name: "auditd"</span> (258 resultados), <span class="mono">decoder.name: "sudo"</span> (144) y <span class="mono">full_log: "priv_esc"</span> (30).</p>
+
+    <figure>
+      <img src="img-lab/03-linux-agent/06-dashboard-query-1.webp" alt="Consulta en el dashboard filtrando por el decoder auditd" loading="lazy">
+      <figcaption>Cada consulta es una vista distinta del mismo host: el decoder de auditd procesa los eventos del kernel, el de sudo los de PAM, y la búsqueda por contenido recupera los SYSCALL con las claves de las reglas.</figcaption>
+    </figure>
+  </section>
+
+  <section id="syslog">
+    <h2><span class="hn">06</span>La quinta fuente: pfSense por syslog</h2>
+    <p>Añadir pfSense como fuente convierte el SIEM de <em>endpoint-céntrico</em> a <em>endpoint + red</em>: pass y block del firewall, leases DHCP y eventos de sistema pasan a ser buscables y correlacionables junto a los cuatro agentes.</p>
+
+    <p>Y hay una propiedad que importa: si un atacante compromete un host monitorizado y desactiva su agente, la telemetría de red sigue llegando de forma independiente. <strong>La telemetría sobrevive al endpoint.</strong></p>
+
+    <h3>Tres capas de filtrado sobre el mismo camino</h3>
+    <div class="cmd">
+      <div class="cmd-bar"><span>wazuh-srv · UFW restringido al origen</span><button type="button">copiar</button></div>
+      <pre>sudo ufw allow proto udp from 10.10.99.1 to any port 514 comment 'pfSense syslog inbound'</pre>
+    </div>
+    <p>Abrir <span class="mono">to any port 514</span> sin filtro de origen convertiría el SIEM en receptor de syslog de cualquier host capaz de enrutar hasta la interfaz de VLAN 99. La segunda capa es un bloque <span class="mono">&lt;remote&gt;</span> adicional en <span class="mono">ossec.conf</span> con <span class="mono">allowed-ips</span>: aunque UFW se relajara por error, los paquetes de orígenes no autorizados se descartan en la capa de aplicación de Wazuh.</p>
+
+    <p>En pfSense, dentro de <span class="mono">Status → System Logs → Settings</span>, lo crítico es <strong>Source Address: VLAN99</strong>. Sin fijarlo, pfSense puede emitir los paquetes desde cualquiera de sus interfaces según la decisión de enrutado, y los que no vengan de <span class="mono">10.10.99.1</span> caerían por el filtro <span class="mono">allowed-ips</span>.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/04-pfsense-syslog/05-remote-syslog-configuration.webp" alt="Configuración de syslog remoto en pfSense" loading="lazy">
+        <figcaption>Los subsistemas exportados cubren lo operativamente relevante para un L1: firewall (el de más volumen y más señal), DHCP (enumeración de hosts, detección de dispositivos no autorizados) y eventos de sistema (reinicios y cambios de configuración, como rastro de auditoría).</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/04-pfsense-syslog/10-tcpdump-transport-confirmation.webp" alt="tcpdump confirmando la llegada de paquetes syslog" loading="lazy">
+        <figcaption><span class="mono">tcpdump</span>: todos los paquetes vienen de <span class="mono">10.10.99.1</span>, como exigen UFW y <span class="mono">allowed-ips</span>.</figcaption>
+      </figure>
+    </div>
+
+    <div class="callout prob">
+      <h4>Fallo 6 · Los eventos llegan pero no se guardan</h4>
+      <p>Las primeras búsquedas de eventos de pfSense no devolvían nada, aunque <span class="mono">tcpdump</span> confirmaba paquetes entrando. Los eventos se recibían, se decodificaban, se evaluaban contra reglas y se descartaban: por defecto Wazuh solo persiste los eventos que disparan una alerta, y los pass del firewall o los leases DHCP no disparan ninguna regla nativa porque son telemetría legítima sin motivo para alertar.</p>
+      <p>La solución son los dos flags de archivo en el bloque <span class="mono">&lt;global&gt;</span>, que hacen que <strong>todo</strong> evento recibido se persista con independencia de si alertó:</p>
+      <div class="cmd" style="margin-top:18px">
+        <div class="cmd-bar"><span>ossec.conf · global</span><button type="button">copiar</button></div>
+        <pre>&lt;logall&gt;yes&lt;/logall&gt;          &lt;!-- archives.log, formato texto --&gt;
+&lt;logall_json&gt;yes&lt;/logall_json&gt;  &lt;!-- archives.json, estructurado --&gt;</pre>
+      </div>
+      <p>Y después un segundo interruptor independiente en Filebeat, porque el instalador habilita solo los <em>alerts</em>: <span class="mono">filebeat.modules → wazuh → archives.enabled: true</span>.</p>
+      <p>La lección es la división arquitectónica de cualquier SIEM entre <strong>alerts</strong> (disparadas por regla, alta señal) y <strong>archives</strong> (ingesta cruda, alto volumen). Para investigación forense y <em>threat hunting</em>, los archives son imprescindibles: permiten investigar eventos que parecían inocuos cuando se ingirieron.</p>
+    </div>
+
+    <h3>Decoder propio para filterlog</h3>
+    <p>Se desarrolló un decoder a medida en <span class="mono">/var/ossec/etc/decoders/pfsense_custom.xml</span> siguiendo el patrón padre + hijos de Wazuh: un padre ligero que casa con el prefijo syslog (<span class="mono">filterlog[PID]:</span>) y dos hijos especializados por familia de protocolo (campos IPv4 base, e IPv4 con puertos para TCP/UDP). Extrae siete campos estructurados: interfaz, razón, acción, dirección, protocolo, IP origen e IP destino, más puertos cuando aplica.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/04-pfsense-syslog/06-custom-decoder.webp" alt="XML del decoder personalizado para filterlog de pfSense" loading="lazy">
+        <figcaption>Padre e hijos: el patrón con más campos capturados gana para TCP/UDP, el base recoge ICMP y el resto.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/04-pfsense-syslog/07-custom-decoder-verification.webp" alt="Verificación del decoder sobre un evento real" loading="lazy">
+        <figcaption>Verificación sobre un evento real tras reiniciar el manager.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/04-pfsense-syslog/08-dashboard-indexer.webp" alt="Creación del patrón de índice wazuh-archives" loading="lazy">
+        <figcaption>El dashboard no trae patrón de índice para <span class="mono">wazuh-archives-*</span>: sin él los eventos llegan al indexer pero son invisibles en Discover.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/04-pfsense-syslog/11-blocked-ping-validation-1.webp" alt="Eventos de bloqueo ICMP correlacionados en el dashboard" loading="lazy">
+        <figcaption>Validación de extremo a extremo: cuatro ICMP bloqueados en el cruce VLAN 20 → VLAN 10 aparecen en el dashboard en menos de 20 segundos con <span class="mono">data.action: "block"</span>.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="dashboard">
+    <h2><span class="hn">07</span>De «tenemos logs» a «tenemos visibilidad»</h2>
+    <p>Cinco fuentes alimentando un indexer no son un SOC, son una tubería de datos. Lo que convierte la tubería en herramienta son dos cosas: reglas que transforman eventos crudos en alertas con significado, y un panel único diseñado para el flujo de trabajo de un analista de nivel 1.</p>
+
+    <p>El problema concreto: al terminar la integración de syslog, la telemetría de pfSense vivía en <span class="mono">wazuh-archives-*</span> y no llegaba a <span class="mono">wazuh-alerts-*</span>, porque el ruleset nativo no alerta sobre eventos genéricos de pass o block. Y la arquitectura del lab define VLAN 10 y VLAN 20 como zonas aisladas, así que <strong>cualquier paquete bloqueado entre ellas es por definición una violación de política</strong>: o un ataque, o una mala configuración. Las dos cosas quiere verlas un L1, pero no deberían tratarse igual.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/05-soc-dashboard/03-custom-rule-1.webp" alt="XML de la regla 100010 que detecta bloqueos de pfSense" loading="lazy">
+        <figcaption><strong>100010</strong>, regla padre: cualquier bloqueo de pfSense, nivel 3 informativo. Alertar de cada bloqueo a nivel alto generaría cientos por hora.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/05-soc-dashboard/04-custom-rule-2.webp" alt="XML de la regla 100011 para la violación de segmentación VLAN 20 a VLAN 10" loading="lazy">
+        <figcaption><strong>100011</strong>, especialización: Dev → Corp, nivel 10, mapeada a T1021/T1210. Es el patrón canónico de movimiento lateral.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/05-soc-dashboard/06-custom-rule-3.webp" alt="XML de la regla 100012 para la dirección inversa" loading="lazy">
+        <figcaption><strong>100012</strong>, dirección inversa: nivel 7, sin mapeo MITRE. Corp → Dev suele ser un error operativo legítimo, no un pivote. La severidad asimétrica <em>es</em> el modelo de amenaza codificado.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/05-soc-dashboard/05-custom-rule-2-validation.webp" alt="Validación de la regla con wazuh-logtest" loading="lazy">
+        <figcaption>Validadas con <span class="mono">wazuh-logtest</span> antes de desplegar: descripción interpolada con IPs reales, táctica y técnica MITRE resueltas, nivel correcto.</figcaption>
+      </figure>
+    </div>
+
+    <div class="callout warn">
+      <h4>Detalle de sintaxis</h4>
+      <p><span class="mono">&lt;field name="action"&gt;</span> fue rechazado como campo estático y hubo que corregirlo a una comprobación de cadena con <span class="mono">&lt;match&gt;</span>.</p>
+    </div>
+
+    <h3>Siete visualizaciones, siete preguntas de triaje</h3>
+    <p>El dashboard se construye entero sobre <span class="mono">wazuh-alerts-*</span>, excluyendo los archives a propósito: las alertas son eventos que necesitaron lógica de detección para ser identificados, los archives son el sustrato crudo. Cada widget responde a una pregunta concreta que un L1 se hace en turno.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Widget</th><th>Pregunta que responde</th></tr></thead>
+        <tbody>
+          <tr><td>Total de alertas (24 h)</td><td>¿El volumen actual es normal, elevado o anómalo? Umbrales de color: verde hasta 100, amarillo hasta 300, rojo por encima.</td></tr>
+          <tr><td>Alertas por severidad</td><td>¿Domina el ruido de baja severidad o hay eventos altos que requieren atención?</td></tr>
+          <tr><td>Línea temporal</td><td>¿Cuándo se dispararon? ¿Hay picos fuera de las ventanas esperadas?</td></tr>
+          <tr><td>Top 10 reglas</td><td>¿Qué reglas generan más alertas? ¿Hay algo anómalo o una regla mal calibrada?</td></tr>
+          <tr><td>Top agentes</td><td>¿Qué host genera más? ¿Lo justifica su rol? Un agente que pasa de 20 alertas diarias a 500 es señal fuerte.</td></tr>
+          <tr><td>Cobertura MITRE</td><td>¿Qué tácticas se observan y en qué hosts? Es el centro visual del panel.</td></tr>
+          <tr><td>Autenticaciones fallidas</td><td>¿Alguien intenta autenticarse y falla? ¿Desde dónde y contra qué cuenta? Filtrado por <span class="mono">rule.groups: "authentication_failed"</span>; vacío es el estado sano.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/05-soc-dashboard/01-dashboard-overview-1.webp" alt="Vista general del dashboard SOC L1, primera parte" loading="lazy">
+        <figcaption>Disposición en cuatro filas según el orden natural de un triaje: conciencia rápida, contexto temporal, detalle operativo, detalle para investigar.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/05-soc-dashboard/12-dashboard-visualization-6.webp" alt="Mapa de calor de tácticas MITRE ATT&CK por host" loading="lazy">
+        <figcaption>Mapa de calor de tácticas por host. En el momento de la validación, <em>Lateral Movement</em> aparecía en naranja fuerte: consecuencia directa de los disparos de la regla 100011.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="kali">
+    <h2><span class="hn">08</span>VLAN 66: el adversario, con capacidades talladas a mano</h2>
+    <p>Aquí el laboratorio cambia de perspectiva: deja de preguntarse <em>cómo detecto</em> y empieza a preguntarse <em>qué necesito detectar</em>.</p>
+
+    <p>El paradigma es <strong>Assume Breach</strong>. En lugar de modelar un atacante externo en el perímetro (escenario donde las defensas modernas absorben casi todo el trabajo), el lab modela el momento <strong>después</strong> de que el perímetro ya ha fallado. Kali no es «un atacante en Internet»: es un atacante que ya tiene pie dentro, por un endpoint comprometido o un implante entregado por phishing. El trabajo del defensor no es impedir la brecha inicial, sino detectar la actividad que viene después.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Vector</th><th>Escenario real</th><th>Lo que exige del firewall</th></tr></thead>
+        <tbody>
+          <tr><td>1 · Phishing a C2</td><td>Un usuario abre un adjunto y el payload abre una conexión HTTPS saliente hacia el servidor de mando y control.</td><td>VLAN 10 y 20 deben poder <strong>iniciar</strong> TCP hacia Kali en los puertos de C2 (443, 80, 4444, 8080). Es el endpoint el que sale, no Kali el que entra.</td></tr>
+          <tr><td>2 · Fuerza bruta SSH y RDP</td><td>Un atacante con acceso inicial descubre servicios expuestos e intenta ataques de credenciales.</td><td>Kali debe poder iniciar TCP hacia VLAN 10 y 20 en tcp/22 y tcp/3389. Ningún otro puerto.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Más allá de esos vectores, no se concede ninguna capacidad. Las fronteras son absolutas y se aplican con reglas de bloqueo explícitas <strong>con logging</strong>: VLAN 66 → VLAN 99 (el SIEM debe ser inalcanzable), VLAN 66 → MGMT, VLAN 66 → pfSense. Cada intento de cruzarlas se registra, así que el intento mismo se convierte en telemetría.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/01-adversary-environment/05-kali-pfsense-rules.webp" alt="Las reglas de firewall de la VLAN 66 en orden" loading="lazy">
+        <figcaption><strong>El orden importa</strong>: pfSense evalúa de arriba abajo y aplica la primera coincidencia. Los pasos de SSH y RDP tienen que ir antes del bloqueo catch-all hacia redes internas, y el permiso de salida a Internet va el último, de modo que todo lo que no case con una regla anterior cae ahí.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/01-adversary-environment/01-vlan10-c2-ports.webp" alt="Regla de C2 saliente en VLAN 10" loading="lazy">
+        <figcaption>Vector 1 en VLAN 10. Cada alerta que genere esta regla es telemetría intencionada: una workstation saliendo a una IP sospechosa por un puerto inusual.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/01-adversary-environment/03-vlan10-vlan20-ssh-rdp.webp" alt="Reglas de fuerza bruta hacia SSH y RDP" loading="lazy">
+        <figcaption>Vector 2, limitado a dos puertos.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/01-adversary-environment/06-kali-ip-verification.webp" alt="Verificación de la IP estática en Kali" loading="lazy">
+        <figcaption>Kali con IP manual <span class="mono">10.10.66.10/24</span>, gateway <span class="mono">10.10.66.1</span> y DNS <span class="mono">1.1.1.1</span>, verificada tras reiniciar NetworkManager.</figcaption>
+      </figure>
+    </div>
+
+    <h3>Inventario de herramientas por táctica</h3>
+    <p>El inventario se organiza por táctica MITRE y no por orden alfabético, porque esa categorización mapea cada herramienta a la categoría de detección que los escenarios van a ejercitar: Sliver C2 y chisel en <em>Command and Control</em>; Mimikatz, hydra, responder, kerbrute e Impacket en <em>Credential Access</em>; nmap y BloodHound en <em>Discovery</em>; evil-winrm, crackmapexec e Invoke-TheHash en <em>Lateral Movement</em>; certipy en <em>Privilege Escalation</em>.</p>
+
+    <h3>Validación del envoltorio de capacidades</h3>
+    <p>Las pruebas de conectividad confirman el envoltorio definido por las reglas: los caminos permitidos responden, los denegados fallan en silencio.</p>
+
+    <div class="figs">
+      <figure>
+        <img src="img-lab/01-adversary-environment/07-brute-force-3389-RDP-validation.webp" alt="Escaneo que confirma los puertos SSH y RDP abiertos desde Kali" loading="lazy">
+        <figcaption>Caminos permitidos: SSH y RDP responden <span class="mono">open</span>.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/01-adversary-environment/09-denied-ports-validation.webp" alt="Timeouts en los puertos denegados" loading="lazy">
+        <figcaption>Caminos denegados: SMB y HTTP dan timeout. Solo los puertos explícitamente permitidos llegan.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-lab/01-adversary-environment/10-ICMP-validation.webp" alt="Fallo de ICMP desde Kali, incluido el gateway" loading="lazy">
+        <figcaption>ICMP falla, incluido el gateway. Y el SOC es inalcanzable.</figcaption>
+      </figure>
+    </div>
+
+    <div class="callout find">
+      <h4>Hallazgo · El gateway no responde pero Internet sí</h4>
+      <p>Durante la validación aparece una observación aparentemente contradictoria: <span class="mono">ping 10.10.66.1</span> no responde, pero <span class="mono">ping 1.1.1.1</span> sí, aunque el tráfico a Internet pasa necesariamente por el gateway.</p>
+      <p>No es un defecto, es el diseño. Una de las reglas del conjunto de VLAN 66 bloquea <span class="mono">VLAN66 net → This Firewall (self)</span>, que incluye <span class="mono">10.10.66.1</span>. El tráfico a Internet, en cambio, no va <em>dirigido</em> a pfSense: va <em>enrutado</em> a través de pfSense, y la lógica de enrutado opera antes que las reglas que bloquean el tráfico hacia self. <span class="mono">traceroute -n 1.1.1.1</span> lo confirma: el primer salto sale como <span class="mono">* * *</span> y los siguientes completan con normalidad.</p>
+      <p>La lección general: una regla que deniega el tráfico <em>hacia</em> el firewall no deniega el tráfico <em>enrutado a través</em> de él. Son dos puntos distintos del pipeline de procesamiento de paquetes.</p>
+    </div>
+  </section>
+
+  <section id="cierre">
+    <h2><span class="hn">09</span>Estado final del lab</h2>
+    <ul>
+      <li>pfSense 2.8.1-RELEASE enrutando entre cuatro segmentos y saliendo por NAT, con seis interfaces operativas y los offloads de NIC desactivados.</li>
+      <li>Bosque <span class="mono">soclab.local</span> con DC01 como primer controlador, DNS integrado con forwarders, jerarquía de OU y un usuario de dominio sin privilegios.</li>
+      <li>Cuatro endpoints desplegados: dos Windows en dominio, un Windows en workgroup y un Ubuntu, repartidos en dos zonas de confianza.</li>
+      <li>Segmentación verificada en los dos sentidos: ni desde desarrollo se alcanza la zona corporativa, ni desde el SIEM se alcanzan los segmentos vigilados.</li>
+      <li>Wazuh 4.14.5 all-in-one en VLAN 99 con cuatro agentes activos, Sysmon en los tres Windows y auditd con ruleset propio en Linux.</li>
+      <li>Cinco fuentes de telemetría: DC01, WS-CORP-01, WS-DEV-01, ws-dev-02 y pfSense, cubriendo endpoint y red en todas las zonas.</li>
+      <li>Archives habilitados en manager y Filebeat, decoder propio para filterlog con siete campos, y patrón de índice <span class="mono">wazuh-archives-*</span>.</li>
+      <li>Tres reglas propias desplegadas (100010, 100011, 100012) y un dashboard SOC L1 de siete widgets con vista de cobertura MITRE.</li>
+      <li>Kali en DMZ con los vectores habilitados por regla, fronteras inmutables validadas y snapshots tomados en cada VM antes de atacar.</li>
+    </ul>
+
+    <div class="prevnext">
+      <a class="btn btn-ghost btn-sm" href="index.html">← Volver al índice</a>
+      <a class="btn btn-primary btn-sm" href="ataque-01.html">Escenario 01: cadena completa contra Linux →</a>
+    </div>
+  </section>
+
+  </main>
+</div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-note">
+      <span>Entorno de laboratorio aislado. Todas las credenciales mostradas son sintéticas.</span>
+    </div>
+  </div>
+</footer>
+<script src="js/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catálogo de detecciones</title>
+<meta name="description" content="Once reglas propias de Wazuh mapeadas a MITRE ATT&CK, con umbrales justificados, XML real y los huecos de detección que cada una cierra.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Ir al contenido</a>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="index.html">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2.5 20 6v6.2c0 4.4-3.2 7.9-8 9.3-4.8-1.4-8-4.9-8-9.3V6l8-3.5Z" stroke="#3ad8c6" stroke-width="1.6"/>
+        <path d="M8.2 12.1l2.6 2.6 5-5" stroke="#6b93ff" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <span>SOC HomeLab<small>soclab.local</small></span>
+    </a>
+    <div class="nav-links">
+      <a href="infraestructura.html">Infraestructura</a>
+      <a href="ataque-01.html">Escenario 01</a>
+      <a href="ataque-02.html">Escenario 02</a>
+      <a href="reglas.html" aria-current="page">Detecciones</a>
+    </div>
+    <div class="nav-right">
+      <span class="nav-tag">11 desplegadas · 4 propuestas</span>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-head" id="contenido">
+  <div class="wrap">
+    <p class="crumb"><a href="index.html">SOC HomeLab</a> / ingeniería de detección</p>
+    <h1>Once reglas, y el hueco que cierra cada una</h1>
+    <p class="lead">Ninguna de estas reglas se escribió a priori. Todas salen de un hueco concreto que un escenario dejó al descubierto: una técnica ejecutada que el ruleset nativo no vio, o que vio tan fragmentada que resultaba invisible en el panel de triaje. El principio es no duplicar lo que ya funciona.</p>
+    <div class="metarow">
+      <span class="chip">11 reglas desplegadas</span>
+      <span class="chip">4 propuestas</span>
+      <span class="chip">pfSense · auditd · Windows</span>
+      <span class="chip">mapeo MITRE en todas las de ataque</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="layout">
+  <aside class="toc">
+    <h4>En esta página</h4>
+    <ol>
+      <li><a href="#catalogo">1 · Catálogo</a></li>
+      <li><a href="#xml">2 · El XML real</a></li>
+      <li><a href="#umbrales">3 · Por qué esos umbrales</a></li>
+      <li><a href="#propuestas">4 · Reglas propuestas</a></li>
+    </ol>
+  </aside>
+
+  <main>
+
+  <section id="catalogo">
+    <h2><span class="hn">01</span>Catálogo</h2>
+    <p>Las tres primeras nacen de la integración de syslog: convierten telemetría de red que vivía solo en los archives en alertas accionables. Las ocho siguientes salen del <a href="ataque-01.html">escenario 01</a>, donde 34.828 alertas de nivel 3 enterraron los seis eventos que de verdad importaban.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>ID</th><th>Nombre</th><th>Nivel</th><th>Táctica</th><th>Técnica</th><th>Fuente</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">100010</td><td>Bloqueo de firewall de pfSense (base)</td><td><span class="lvl l3">3</span></td><td>—</td><td>—</td><td>pfSense · decoder propio</td></tr>
+          <tr><td class="mono">100011</td><td>Violación de segmentación VLAN 20 → VLAN 10</td><td><span class="lvl l10">10</span></td><td>Lateral Movement</td><td class="mono">T1021 · T1210</td><td>pfSense (vía 100010)</td></tr>
+          <tr><td class="mono">100012</td><td>Violación de política VLAN 10 → VLAN 20</td><td><span class="lvl l7">7</span></td><td>—</td><td>—</td><td>pfSense (vía 100010)</td></tr>
+          <tr><td class="mono">100013</td><td>Escaneo de puertos, un objetivo</td><td><span class="lvl l10">10</span></td><td>Reconnaissance</td><td class="mono">T1046</td><td>pfSense (agrega 100010)</td></tr>
+          <tr><td class="mono">100014</td><td>Escaneo de puertos multiobjetivo</td><td><span class="lvl l12">12</span></td><td>Reconnaissance</td><td class="mono">T1046 · T1018</td><td>Wazuh (agrega 100013)</td></tr>
+          <tr><td class="mono">100015</td><td>Agregación de fuerza bruta SSH</td><td><span class="lvl l12">12</span></td><td>Credential Access</td><td class="mono">T1110.001</td><td>grupo <span class="mono">authentication_failed</span></td></tr>
+          <tr><td class="mono">100016</td><td>Fuerza bruta seguida de login correcto</td><td><span class="lvl l15">14</span></td><td>Initial Access</td><td class="mono">T1078 · T1110.001</td><td>correlación compuesta</td></tr>
+          <tr><td class="mono">100017</td><td>Acceso a ficheros de credenciales</td><td><span class="lvl l12">12</span></td><td>Credential Access</td><td class="mono">T1552.001 · .003 · .004</td><td>auditd</td></tr>
+          <tr><td class="mono">100018</td><td>Modificación de configuración de cron</td><td><span class="lvl l10">10</span></td><td>Persistence</td><td class="mono">T1053.003</td><td>auditd</td></tr>
+          <tr><td class="mono">100019</td><td>Modificación de <span class="mono">authorized_keys</span></td><td><span class="lvl l12">12</span></td><td>Persistence</td><td class="mono">T1098.004</td><td>auditd</td></tr>
+          <tr><td class="mono">100020</td><td>Secuencia de comandos de descubrimiento</td><td><span class="lvl l7">8</span></td><td>Discovery</td><td class="mono">T1082 · T1087.001 · T1057 · T1049</td><td>auditd</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Dos patrones de diseño que se repiten</h3>
+    <p><strong>Padre genérico más especializaciones.</strong> La 100010 casa con cualquier bloqueo de pfSense a nivel 3 informativo, porque alertar de cada bloqueo a severidad alta generaría cientos de alertas por hora en operación normal. Encima se montan especializaciones que suben el nivel solo cuando la dirección del tráfico significa algo: la 100011 para Dev → Corp a nivel 10 con mapeo MITRE, la 100012 para la dirección inversa a nivel 7 y sin mapeo.</p>
+    <p>Esa asimetría es el modelo de amenaza codificado, no un descuido. Dev → Corp es el patrón canónico de movimiento lateral: un atacante con pie en una zona menos confiable intentando pivotar hacia sistemas de más valor. Corp → Dev suele ser un error operativo legítimo. <strong>No toda violación de segmentación es igual de sospechosa.</strong></p>
+    <p><strong>Agregación en cascada.</strong> La 100013 agrega la 100010 (diez puertos distintos del mismo origen en 60 s), y la 100014 agrega la 100013 (cinco objetivos distintos en 600 s). La misma idea en autenticación: la 100015 agrega el grupo <span class="mono">authentication_failed</span>, y la 100016 la usa como condición previa para emitir la alerta compuesta de compromiso.</p>
+  </section>
+
+  <section id="xml">
+    <h2><span class="hn">02</span>El XML real</h2>
+    <p>Todas se validaron con <span class="mono">wazuh-logtest</span> antes de desplegarlas, comprobando que el decoder encaja, que la descripción interpola las IPs y los campos reales, que el nivel es el esperado y que las tácticas y técnicas MITRE se resuelven.</p>
+
+    <div class="win" data-tabs>
+      <div class="win-bar">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <div class="tabs" role="tablist" aria-label="Reglas de detección en XML">
+          <button type="button" role="tab" data-tab="r10" aria-selected="true">100010 + 100011</button>
+          <button type="button" role="tab" data-tab="r13" aria-selected="false">100013</button>
+          <button type="button" role="tab" data-tab="r15" aria-selected="false">100015 + 100016</button>
+          <button type="button" role="tab" data-tab="r17" aria-selected="false">100017</button>
+          <button type="button" role="tab" data-tab="r19" aria-selected="false">100019</button>
+          <button type="button" role="tab" data-tab="r20" aria-selected="false">100020</button>
+        </div>
+      </div>
+      <div class="win-body">
+        <div data-panel="r10"><pre><span class="k">&lt;group</span> name=<span class="s">"pfsense,custom,"</span><span class="k">&gt;</span>
+  <span class="k">&lt;rule</span> id=<span class="s">"100010"</span> level=<span class="s">"3"</span><span class="k">&gt;</span>
+    <span class="k">&lt;decoded_as&gt;</span>pfsense-custom-header<span class="k">&lt;/decoded_as&gt;</span>
+    <span class="k">&lt;match&gt;</span>block<span class="k">&lt;/match&gt;</span>
+    <span class="k">&lt;description&gt;</span>pfSense: firewall blocked a packet<span class="k">&lt;/description&gt;</span>
+    <span class="k">&lt;group&gt;</span>firewall,firewall_drop,<span class="k">&lt;/group&gt;</span>
+  <span class="k">&lt;/rule&gt;</span>
+
+  <span class="k">&lt;rule</span> id=<span class="s">"100011"</span> level=<span class="s">"10"</span><span class="k">&gt;</span>
+    <span class="k">&lt;if_sid&gt;</span>100010<span class="k">&lt;/if_sid&gt;</span>
+    <span class="k">&lt;srcip&gt;</span>10.10.20.0/24<span class="k">&lt;/srcip&gt;</span>
+    <span class="k">&lt;dstip&gt;</span>10.10.10.0/24<span class="k">&lt;/dstip&gt;</span>
+    <span class="k">&lt;description&gt;</span>pfSense: VLAN 20 (Dev) → VLAN 10 (Corp) blocked - segmentation violation from $(srcip) to $(dstip)<span class="k">&lt;/description&gt;</span>
+    <span class="k">&lt;mitre&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1021<span class="k">&lt;/id&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1210<span class="k">&lt;/id&gt;</span>
+    <span class="k">&lt;/mitre&gt;</span>
+    <span class="k">&lt;group&gt;</span>attack,lateral_movement,segmentation_violation,<span class="k">&lt;/group&gt;</span>
+  <span class="k">&lt;/rule&gt;</span>
+<span class="k">&lt;/group&gt;</span>
+
+<span class="c">&lt;!-- &lt;field name="action"&gt; se rechaza como campo estático:
+     hay que usar la comprobación de cadena &lt;match&gt; --&gt;</span></pre></div>
+
+        <div data-panel="r13" hidden><pre><span class="k">&lt;group</span> name=<span class="s">"pfsense,custom,"</span><span class="k">&gt;</span>
+  <span class="k">&lt;rule</span> id=<span class="s">"100013"</span> level=<span class="s">"10"</span> frequency=<span class="s">"10"</span> timeframe=<span class="s">"60"</span><span class="k">&gt;</span>
+    <span class="k">&lt;if_matched_sid&gt;</span>100010<span class="k">&lt;/if_matched_sid&gt;</span>
+    <span class="k">&lt;same_srcip /&gt;</span>
+    <span class="k">&lt;different_dstport /&gt;</span>
+    <span class="k">&lt;description&gt;</span>pfSense: port scan detected - 10+ different ports blocked from $(srcip) in 60s<span class="k">&lt;/description&gt;</span>
+    <span class="k">&lt;mitre&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1046<span class="k">&lt;/id&gt;</span>
+    <span class="k">&lt;/mitre&gt;</span>
+    <span class="k">&lt;group&gt;</span>attack,reconnaissance,portscan,<span class="k">&lt;/group&gt;</span>
+  <span class="k">&lt;/rule&gt;</span>
+<span class="k">&lt;/group&gt;</span>
+
+<span class="c">&lt;!-- different_dstport es lo que distingue un escaneo de una aplicación
+     que reintenta: 100 intentos al MISMO puerto no casan;
+     10 puertos distintos en el mismo objetivo, sí. --&gt;</span></pre></div>
+
+        <div data-panel="r15" hidden><pre><span class="k">&lt;group</span> name=<span class="s">"authentication,custom,"</span><span class="k">&gt;</span>
+  <span class="k">&lt;rule</span> id=<span class="s">"100015"</span> level=<span class="s">"12"</span> frequency=<span class="s">"10"</span> timeframe=<span class="s">"120"</span><span class="k">&gt;</span>
+    <span class="k">&lt;if_matched_group&gt;</span>authentication_failed<span class="k">&lt;/if_matched_group&gt;</span>
+    <span class="k">&lt;same_srcip /&gt;</span>
+    <span class="k">&lt;description&gt;</span>SSH brute force detected - 10+ authentication failures from $(srcip) targeting $(hostname) in 120 seconds<span class="k">&lt;/description&gt;</span>
+    <span class="k">&lt;mitre&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1110.001<span class="k">&lt;/id&gt;</span>
+    <span class="k">&lt;/mitre&gt;</span>
+    <span class="k">&lt;group&gt;</span>attack,credential_access,brute_force,<span class="k">&lt;/group&gt;</span>
+  <span class="k">&lt;/rule&gt;</span>
+
+  <span class="k">&lt;rule</span> id=<span class="s">"100016"</span> level=<span class="s">"14"</span><span class="k">&gt;</span>
+    <span class="k">&lt;if_sid&gt;</span>5715<span class="k">&lt;/if_sid&gt;</span>
+    <span class="k">&lt;if_matched_sid&gt;</span>100015<span class="k">&lt;/if_matched_sid&gt;</span>
+    <span class="k">&lt;same_srcip /&gt;</span>
+    <span class="k">&lt;description&gt;</span>SSH brute force followed by successful login from $(srcip) - probable compromise<span class="k">&lt;/description&gt;</span>
+    <span class="k">&lt;mitre&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1078<span class="k">&lt;/id&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1110.001<span class="k">&lt;/id&gt;</span>
+    <span class="k">&lt;/mitre&gt;</span>
+    <span class="k">&lt;group&gt;</span>attack,credential_access,brute_force_success,compromise,<span class="k">&lt;/group&gt;</span>
+  <span class="k">&lt;/rule&gt;</span>
+<span class="k">&lt;/group&gt;</span>
+
+<span class="c">&lt;!-- if_matched_group en lugar de heredar de un SID concreto: el grupo
+     authentication_failed lo aplica el ruleset nativo a fallos de SSH,
+     de PAM y de syslog, así que una sola regla cubre las tres fuentes
+     que en el escenario 01 emitieron 3.027 alertas en paralelo. --&gt;</span></pre></div>
+
+        <div data-panel="r17" hidden><pre><span class="c"># /etc/audit/rules.d/credential-access.rules</span>
+<span class="c"># los watches operan a nivel de syscall (openat, read), así que</span>
+<span class="c"># cualquier proceso que abra el fichero dispara el evento:</span>
+<span class="c"># da igual si el atacante evita cat, less o un editor.</span>
+
+<span class="k">&lt;group</span> name=<span class="s">"audit,custom,"</span><span class="k">&gt;</span>
+  <span class="k">&lt;rule</span> id=<span class="s">"100017"</span> level=<span class="s">"12"</span><span class="k">&gt;</span>
+    <span class="k">&lt;if_group&gt;</span>audit<span class="k">&lt;/if_group&gt;</span>
+    <span class="k">&lt;field</span> name=<span class="s">"audit.key"</span><span class="k">&gt;</span>env_file_access|notes_file_access|bash_history_access|ssh_dir_access<span class="k">&lt;/field&gt;</span>
+    <span class="k">&lt;description&gt;</span>Credential file access detected - $(audit.exe) accessed $(audit.file.name) by uid $(audit.uid)<span class="k">&lt;/description&gt;</span>
+    <span class="k">&lt;mitre&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1552.001<span class="k">&lt;/id&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1552.003<span class="k">&lt;/id&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1552.004<span class="k">&lt;/id&gt;</span>
+    <span class="k">&lt;/mitre&gt;</span>
+    <span class="k">&lt;group&gt;</span>attack,credential_access,sensitive_file_access,<span class="k">&lt;/group&gt;</span>
+  <span class="k">&lt;/rule&gt;</span>
+<span class="k">&lt;/group&gt;</span></pre></div>
+
+        <div data-panel="r19" hidden><pre><span class="k">&lt;group</span> name=<span class="s">"audit,custom,"</span><span class="k">&gt;</span>
+  <span class="k">&lt;rule</span> id=<span class="s">"100019"</span> level=<span class="s">"12"</span><span class="k">&gt;</span>
+    <span class="k">&lt;if_group&gt;</span>audit<span class="k">&lt;/if_group&gt;</span>
+    <span class="k">&lt;field</span> name=<span class="s">"audit.key"</span><span class="k">&gt;</span>authorized_keys_write<span class="k">&lt;/field&gt;</span>
+    <span class="k">&lt;description&gt;</span>SSH authorized_keys modification detected - $(audit.exe) modified $(audit.file.name) by uid $(audit.uid) - probable persistence<span class="k">&lt;/description&gt;</span>
+    <span class="k">&lt;mitre&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1098.004<span class="k">&lt;/id&gt;</span>
+    <span class="k">&lt;/mitre&gt;</span>
+    <span class="k">&lt;group&gt;</span>attack,persistence,ssh_authorized_keys,<span class="k">&lt;/group&gt;</span>
+  <span class="k">&lt;/rule&gt;</span>
+<span class="k">&lt;/group&gt;</span></pre></div>
+
+        <div data-panel="r20" hidden><pre><span class="k">&lt;group</span> name=<span class="s">"audit,custom,"</span><span class="k">&gt;</span>
+  <span class="k">&lt;rule</span> id=<span class="s">"100020"</span> level=<span class="s">"8"</span> frequency=<span class="s">"6"</span> timeframe=<span class="s">"60"</span><span class="k">&gt;</span>
+    <span class="k">&lt;if_matched_group&gt;</span>audit<span class="k">&lt;/if_matched_group&gt;</span>
+    <span class="k">&lt;field</span> name=<span class="s">"audit.key"</span><span class="k">&gt;</span>discovery_command<span class="k">&lt;/field&gt;</span>
+    <span class="k">&lt;same_field&gt;</span>audit.uid<span class="k">&lt;/same_field&gt;</span>
+    <span class="k">&lt;description&gt;</span>Discovery command sequence detected - user uid $(audit.uid) executed 6+ reconnaissance commands in 60 seconds<span class="k">&lt;/description&gt;</span>
+    <span class="k">&lt;mitre&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1082<span class="k">&lt;/id&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1087.001<span class="k">&lt;/id&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1057<span class="k">&lt;/id&gt;</span>
+      <span class="k">&lt;id&gt;</span>T1049<span class="k">&lt;/id&gt;</span>
+    <span class="k">&lt;/mitre&gt;</span>
+    <span class="k">&lt;group&gt;</span>attack,discovery,recon,<span class="k">&lt;/group&gt;</span>
+  <span class="k">&lt;/rule&gt;</span>
+<span class="k">&lt;/group&gt;</span>
+
+<span class="c">&lt;!-- ningún comando de enumeración es sospechoso por separado.
+     Lo anómalo es la secuencia: 6 o más en menos de un minuto
+     del mismo UID. --&gt;</span></pre></div>
+      </div>
+      <div class="win-foot">Las reglas de pfSense dependen del decoder propio <span class="mono">pfsense_custom.xml</span>; las de auditd, de los watches en <span class="mono">/etc/audit/rules.d/</span> con sus claves. Sin la capa de telemetría debajo, la regla no casa con nada.</div>
+    </div>
+  </section>
+
+  <section id="umbrales">
+    <h2><span class="hn">03</span>Por qué esos umbrales y no otros</h2>
+    <p>Un umbral sin justificar es un umbral que alguien va a cambiar en cuanto genere un falso positivo. Estos son los razonamientos:</p>
+
+    <h3>100015 · 10 fallos en 120 segundos, nivel 12</h3>
+    <ul>
+      <li><strong>frequency = 10</strong> se elige deliberadamente por encima del rango del error humano. Alguien que teclea mal su contraseña diez veces en dos minutos no se está equivocando: es una herramienta automatizada. Ese umbral elimina los falsos positivos de usuarios equivocándose durante una incidencia o después de una rotación de credenciales.</li>
+      <li><strong>timeframe = 120 s</strong> captura la fuerza bruta en ráfaga (hydra con su threading por defecto genera decenas de intentos por segundo) y a la vez es suficientemente corto para producir alertas distintas si el atacante pausa y reanuda.</li>
+      <li><strong>Nivel 12</strong>, crítico: ninguna actividad operativa legítima encaja con el patrón, así que un disparo indica ataque casi con certeza.</li>
+    </ul>
+
+    <h3>100013 · 10 puertos distintos en 60 segundos, nivel 10</h3>
+    <ul>
+      <li><strong>frequency = 10</strong> detecta incluso escaneos lentos de tipo «sigiloso»: <span class="mono">nmap -T2 --scan-delay 5s</span> produce unos 12 eventos por minuto, lo que casa con margen.</li>
+      <li><strong>timeframe = 60 s</strong> equilibra latencia de detección (la alerta aparece en menos de un minuto) y detección de ráfagas.</li>
+      <li><strong>Nivel 10</strong>, medio-alto: sube desde el nivel 3 de la regla padre. Suficiente para destacar en el panel y en el mapa de calor MITRE, y deja margen por arriba para meta-agregaciones como la 100014.</li>
+    </ul>
+
+    <h3>100017 · sin umbral, una alerta por evento</h3>
+    <p>Dispara en cada acceso a un fichero vigilado, y es intencionado: el acceso a credenciales es lo bastante alta-señal como para que agregar oscureciera detalle operativamente crítico. <strong>Un solo <span class="mono">cat ~/.env</span> merece investigación.</strong> Nivel 12, a la misma altura que la agregación de fuerza bruta y justo por debajo de la confirmación de compromiso de la 100016.</p>
+
+    <div class="callout find">
+      <h4>Por qué esta regla existe</h4>
+      <p>El acceso a ficheros de credenciales es una operación silenciosa. A diferencia de la fuerza bruta o de una explotación, leer un fichero no produce error, no arranca ningún servicio y no genera ningún síntoma visible. Sin detección explícita, un atacante cosecha todo el material credencial de un host en segundos sin dejar señal. La detección es lo que convierte «robo silencioso de credenciales» en «acceso a credenciales observado»: la diferencia entre una brecha no detectada y un incidente en curso.</p>
+    </div>
+
+    <h3>100020 · 6 comandos en 60 segundos, nivel 8</h3>
+    <p>Nivel medio a propósito: la secuencia de descubrimiento es un indicador de contexto, no una confirmación de compromiso. Un administrador haciendo diagnóstico puede encadenar varios comandos de enumeración legítimamente. Nivel 8 lo hace visible en el panel sin competir con las alertas que exigen acción inmediata.</p>
+  </section>
+
+  <section id="propuestas">
+    <h2><span class="hn">04</span>Reglas propuestas desde el escenario 02</h2>
+    <p>El <a href="ataque-02.html">escenario de Windows y Active Directory</a> dejó cuatro huecos documentados. La cobertura nativa de Sysmon es bastante más fuerte que la de red, así que hacen falta menos reglas que en el 01, pero las que faltan apuntan a técnicas de impacto alto.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>ID</th><th>Nombre</th><th>Táctica</th><th>Hueco que cierra</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">100022</td><td>Acceso a memoria de LSASS vía <span class="mono">rundll32</span> + <span class="mono">comsvcs.dll</span></td><td>Credential Access</td><td>La técnica exacta de la fase 5. El evento existía en el índice crudo, pero ninguna regla nativa casa con el patrón <span class="mono">MiniDump</span>, así que era invisible en el flujo del L1.</td></tr>
+          <tr><td class="mono">100023</td><td>Acceso a recurso administrativo SMB desde proceso no estándar</td><td>Lateral Movement</td><td><span class="mono">net use</span> hacia <span class="mono">\\host\C$</span> o <span class="mono">\\host\ADMIN$</span> con un proceso padre anómalo. Correlacionaría el montaje y la caída del ejecutable en una única alerta de nivel 12.</td></tr>
+          <tr><td class="mono">100024</td><td>Intento de bypass de UAC vía registro <span class="mono">ms-settings</span></td><td>Defense Evasion</td><td>Sysmon Event 13 sobre <span class="mono">HKCU\Software\Classes\ms-settings\Shell\Open\command</span>: el paso de preparación de fodhelper y computerdefaults, que deja telemetría aunque el bypass falle.</td></tr>
+          <tr><td class="mono">100025</td><td>Creación de cuenta de dominio desde una workstation</td><td>Persistence</td><td><span class="mono">net user /add /domain</span> ejecutado en un host que no es controlador de dominio: indicador de manipulación de AD dirigida por C2.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <h4>Lo que queda sin resolver</h4>
+      <p>Ninguna de estas cuatro reglas correlaciona la <em>cadena completa</em>: volcado de credenciales → montaje de recurso administrativo → transferencia de binario → ejecución remota → dominio comprometido. Cada paso produce alertas aisladas que, por separado, son indistinguibles de administración rutinaria. Correlacionar la secuencia entera sigue siendo el reto abierto del laboratorio.</p>
+    </div>
+
+    <div class="prevnext">
+      <a class="btn btn-ghost btn-sm" href="ataque-02.html">← Escenario 02</a>
+      <a class="btn btn-primary btn-sm" href="index.html">Volver al índice →</a>
+    </div>
+  </section>
+
+  </main>
+</div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-note">
+      <span>Cada regla está documentada en el repositorio con su modelo de amenaza, análisis de falsos positivos y notas de calibración.</span>
+    </div>
+  </div>
+</footer>
+<script src="js/site.js"></script>
+</body>
+</html>

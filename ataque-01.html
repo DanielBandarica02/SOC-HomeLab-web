@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Escenario 01 · Cadena completa contra Dev</title>
+<meta name="description" content="Cadena de ataque completa desde Kali contra la VLAN de desarrollo: nmap, hydra, acceso SSH, descubrimiento, cosecha de credenciales, pivote RDP y dos persistencias, con la detección observada en Wazuh.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<a class="skip" href="#contenido">Ir al contenido</a>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="index.html">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2.5 20 6v6.2c0 4.4-3.2 7.9-8 9.3-4.8-1.4-8-4.9-8-9.3V6l8-3.5Z" stroke="#3ad8c6" stroke-width="1.6"/>
+        <path d="M8.2 12.1l2.6 2.6 5-5" stroke="#6b93ff" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <span>SOC HomeLab<small>soclab.local</small></span>
+    </a>
+    <div class="nav-links">
+      <a href="infraestructura.html">Infraestructura</a>
+      <a href="ataque-01.html" aria-current="page">Escenario 01</a>
+      <a href="ataque-02.html">Escenario 02</a>
+      <a href="reglas.html">Detecciones</a>
+    </div>
+    <div class="nav-right">
+      <span class="nav-tag">13 técnicas · 6 tácticas</span>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-head" id="contenido">
+  <div class="wrap">
+    <p class="crumb"><a href="index.html">SOC HomeLab</a> / escenarios / 01 · Linux · VLAN Dev</p>
+    <h1>Cadena completa contra ws-dev-02</h1>
+    <p class="lead">Ocho fases desde la DMZ del adversario hasta dos mecanismos de persistencia en un host Linux de desarrollo, con un pivote por RDP tunelizado hacia Windows en medio. Cada fase se ejecuta, se observa en el SIEM y se documenta antes de pasar a la siguiente. El escenario cierra con el análisis honesto de las 40.038 alertas que generó.</p>
+    <div class="metarow">
+      <span class="chip">Kali 10.10.66.10 → VLAN 20</span>
+      <span class="chip">8 fases</span>
+      <span class="chip">13 técnicas ATT&amp;CK</span>
+      <span class="chip">~90 min de ejecución</span>
+      <span class="chip">40.038 alertas</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="layout">
+  <aside class="toc">
+    <h4>Fases</h4>
+    <ol>
+      <li><a href="#prep">Preparación del entorno</a></li>
+      <li><a href="#f1">1 · Reconocimiento</a></li>
+      <li><a href="#f2">2 · Fuerza bruta SSH</a></li>
+      <li><a href="#f3">3 · Acceso inicial</a></li>
+      <li><a href="#f4">4 · Descubrimiento</a></li>
+      <li><a href="#f5">5 · Acceso a credenciales</a></li>
+      <li><a href="#f6">6 · Movimiento lateral</a></li>
+      <li><a href="#f7">7 · Persistencia por cron</a></li>
+      <li><a href="#f8">8 · Persistencia por clave SSH</a></li>
+      <li><a href="#siem">9 · Verificación en el SIEM</a></li>
+      <li><a href="#volumen">10 · El 86,9 %</a></li>
+      <li><a href="#lecciones">11 · Lecciones</a></li>
+    </ol>
+  </aside>
+
+  <main>
+
+  <section id="resumen">
+    <h2><span class="hn">00</span>El arco del ataque</h2>
+    <p>Un atacante con pie establecido en una zona de baja confianza identifica servicios expuestos en una red vecina, revienta credenciales por diccionario en un host Linux de desarrollo, usa esa cuenta para enumerar el entorno y recolectar más credenciales del sistema de ficheros, pivota por <em>port forwarding</em> SSH hacia una workstation Windows con las credenciales robadas, y finalmente deja dos mecanismos de persistencia independientes en el punto de apoyo original para sobrevivir al cierre de sesión.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>#</th><th>Táctica</th><th>Origen</th><th>Objetivo</th><th>Técnica</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Reconnaissance</td><td>Kali</td><td class="mono">10.10.20.0/24</td><td class="mono">T1046</td></tr>
+          <tr><td>2</td><td>Credential Access</td><td>Kali</td><td>ws-dev-02</td><td class="mono">T1110.001</td></tr>
+          <tr><td>3</td><td>Initial Access</td><td>Kali</td><td>ws-dev-02</td><td class="mono">T1078</td></tr>
+          <tr><td>4</td><td>Discovery</td><td>vía ws-dev-02</td><td>ws-dev-02</td><td class="mono">T1082 · T1087.001 · T1057 · T1049</td></tr>
+          <tr><td>5</td><td>Credential Access</td><td>vía ws-dev-02</td><td>ws-dev-02</td><td class="mono">T1552.001 · .003 · .004</td></tr>
+          <tr><td>6</td><td>Lateral Movement</td><td>ws-dev-02 como pivote</td><td>WS-DEV-01</td><td class="mono">T1021.001</td></tr>
+          <tr><td>7</td><td>Persistence</td><td>vía ws-dev-02</td><td>ws-dev-02</td><td class="mono">T1053.003</td></tr>
+          <tr><td>8</td><td>Persistence</td><td>vía ws-dev-02</td><td>ws-dev-02</td><td class="mono">T1098.004</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="prep">
+    <h2><span class="hn">—</span>Preparación del entorno</h2>
+    <p>Los dos hosts objetivo se sembraron con credenciales sintéticas y configuración que modela un entorno de desarrollo realista. Esto se documenta de forma explícita en lugar de presentarlo como «descubrimientos» del atacante: es un ejercicio controlado, y los datos sembrados representan lo que una workstation de desarrollo suele contener de verdad.</p>
+
+    <p>Al usuario local <span class="mono">arodriguez</span> se le puso la contraseña <span class="mono">summer2024</span>, elegida a propósito porque aparece en las primeras páginas de <span class="mono">rockyou.txt</span>. Modela la realidad de que las cuentas de desarrollo usan contraseñas débiles cuando el entorno se considera «interno y de bajo riesgo».</p>
+
+    <div class="cmd">
+      <div class="cmd-bar"><span>~/.env sembrado en ws-dev-02</span><button type="button">copiar</button></div>
+      <pre>DB_HOST=10.10.20.10
+DB_USER=devadmin
+DB_PASSWORD=DevPassw0rd2026!
+API_KEY=sk_test_abcdef1234567890</pre>
+    </div>
+
+    <div class="cmd">
+      <div class="cmd-bar"><span>~/notes.txt sembrado en ws-dev-02</span><button type="button">copiar</button></div>
+      <pre>Reminders:
+- WS-DEV-01 login: kevin hernandez / Kevin2026!
+- Wifi office: SoclabWifi / SocLab2026!
+- VPN backup: dbandarica / DAniel2026!</pre>
+    </div>
+
+    <p>Además, una clave SSH privada en <span class="mono">~/.ssh/service_key</span>. En <span class="mono">WS-DEV-01</span> se asignó a <span class="mono">kevin hernandez</span> la contraseña <span class="mono">Kevin2026!</span>, <strong>la misma que aparece en el fichero de notas</strong>: eso crea la cadena de credenciales que habilitará el movimiento lateral de la fase 6. Snapshot <span class="mono">scenario-1-ready</span> en ambos hosts.</p>
+  </section>
+
+  <section id="f1">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 1</span><strong>Reconocimiento</strong><span class="mitre">T1046 · Network Service Discovery</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>Enumerar el segmento de desarrollo desde Kali para identificar hosts alcanzables y servicios abiertos. Es lo primero que hace un atacante post-perímetro: establecer la superficie de ataque interna.</p>
+
+        <h4>Ejecución</h4>
+        <div class="cmd">
+          <div class="cmd-bar"><span>kali@10.10.66.10</span><button type="button">copiar</button></div>
+          <pre># barrido ICMP: no devuelve ningún host
+nmap -sn 10.10.20.0/24
+
+# el firewall no permite ICMP de VLAN 66 a VLAN 20, así que se salta
+# el descubrimiento de hosts con -Pn y se va directo a SYN
+sudo nmap -Pn -sS -p 22,3389,445,80,443,3306 10.10.20.0/24
+
+# enumeración de servicios contra los dos hosts encontrados
+sudo nmap -Pn -sV -sC -p 22,3389 10.10.20.20 10.10.20.10 -oN /tmp/recon-vlan20.txt</pre>
+        </div>
+
+        <p>El barrido ICMP falla como se esperaba: las sondas se descartan en silencio. Pero <strong>cada paquete descartado genera un evento de filterlog</strong> que viaja a Wazuh por syslog. El escaneo SYN identifica dos hosts vivos, y la enumeración de servicios revela OpenSSH 9.6p1 en <span class="mono">ws-dev-02</span> y el servicio RDP de Windows en <span class="mono">WS-DEV-01</span>. El banner de SSH entrega la versión, información útil para buscar vulnerabilidades conocidas.</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/01-kill-chain/01-nmap-scan-identified-1.webp" alt="Salida de nmap identificando hosts vivos en la VLAN 20" loading="lazy">
+            <figcaption>Escaneo SYN sobre el /24: dos hosts responden.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/02-nmap-scan-identified-2.webp" alt="Continuación de la salida del escaneo nmap" loading="lazy">
+            <figcaption>Puertos abiertos por host.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/03-nmap-scan-identified-3.webp" alt="Enumeración de servicios con nmap -sV -sC" loading="lazy">
+            <figcaption>OpenSSH 9.6p1 en el host Linux, RDP en el Windows.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/04-wazuh-logs-reconnaissance-1.webp" alt="Eventos de reconocimiento en el dashboard de Wazuh" loading="lazy">
+            <figcaption>Eventos generados tras los dos primeros escaneos.</figcaption>
+          </figure>
+        </div>
+
+        <h4>Detección</h4>
+        <p>Fue, con diferencia, el evento de mayor volumen de todo el escenario. El firewall descartó cada paquete que no encajaba en los caminos explícitamente permitidos, y el escaneo de un <span class="mono">/24</span> sobre seis puertos produjo <strong>aproximadamente 34.828 eventos de filterlog</strong>, cada uno procesado por el decoder propio y reenviado como alerta.</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/01-kill-chain/05-wazuh-logs-reconnaissance-2.webp" alt="Eventos generados por la enumeración de servicios" loading="lazy">
+            <figcaption>Eventos tras la enumeración de servicios.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/06-wazuh-logs.webp" alt="Volumen total de eventos en el dashboard durante el reconocimiento" loading="lazy">
+            <figcaption>El volumen que se analiza al final del documento.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f2">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 2</span><strong>Fuerza bruta SSH</strong><span class="mitre">T1110.001 · Password Guessing</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>Obtener credenciales válidas de SSH contra el usuario conocido <span class="mono">arodriguez</span> mediante ataque de diccionario.</p>
+
+        <h4>Ejecución</h4>
+        <div class="cmd">
+          <div class="cmd-bar"><span>kali · preparación del diccionario</span><button type="button">copiar</button></div>
+          <pre># rockyou viene comprimido en Kali
+sudo gunzip -k /usr/share/wordlists/rockyou.txt.gz
+head -n 1000 /usr/share/wordlists/rockyou.txt &gt; /home/wordlist_small.txt
+
+# -f corta el ataque en la primera coincidencia, lo que reduce el ruido
+hydra -l arodriguez -P /home/wordlist_small.txt -t 4 -V -f ssh://10.10.20.20</pre>
+        </div>
+
+        <p>Con un subconjunto de 1.000 entradas y cuatro hilos en paralelo, la contraseña cae en unos 45 segundos de intentos efectivos.</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/01-kill-chain/07-hydra-attempts.webp" alt="Hydra ejecutando intentos de autenticación contra SSH" loading="lazy">
+            <figcaption>hydra en modo verbose contra <span class="mono">10.10.20.20</span>.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/08-hydra-completed.webp" alt="Hydra encontrando la contraseña válida" loading="lazy">
+            <figcaption>Credencial válida encontrada.</figcaption>
+          </figure>
+        </div>
+
+        <h4>Detección</h4>
+        <p>La fuerza bruta generó tres categorías de alerta en paralelo, cada una correspondiente a una capa de decoder distinta procesando los mismos eventos de autenticación:</p>
+        <ul>
+          <li><strong>2.321</strong> fallos de autenticación de syslog: el registro propio de SSH de cada intento.</li>
+          <li><strong>390</strong> fallos de autenticación de usuario de syslog: entradas suplementarias del log de auth.</li>
+          <li><strong>337</strong> fallos de login de PAM: el registro independiente del subsistema PAM.</li>
+        </ul>
+
+        <div class="callout find">
+          <h4>Hueco de detección identificado</h4>
+          <p>El intento correcto se registró como <span class="mono">authentication_success</span>. Combinado con los 3.027 fallos desde la misma IP de origen en 240 segundos, el patrón es inequívoco. Pero <strong>el ruleset nativo de Wazuh detectó cada fallo individual sin agregarlos en una sola alerta de alta severidad</strong>. Ese hueco se cierra después con la regla propia <a href="reglas.html">100015</a>, que consume el grupo <span class="mono">authentication_failed</span> y dispara una única alerta de nivel 12 cuando acumula 10 fallos del mismo origen en 120 segundos.</p>
+        </div>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/01-kill-chain/09-wazuh-logs-brute-force.webp" alt="Alertas de fuerza bruta en el dashboard de Wazuh" loading="lazy">
+            <figcaption>Fallos de autenticación agrupados por regla.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/10-wazuh-logs-brute-force-2.webp" alt="Detalle de las alertas de autenticación fallida" loading="lazy">
+            <figcaption>Tres fuentes solapadas para el mismo hecho.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/11-wazuh-logs-brute-force-3.webp" alt="Más detalle de las alertas generadas por hydra" loading="lazy">
+            <figcaption>Volumen por decoder.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f3">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 3</span><strong>Acceso inicial</strong><span class="mitre">T1078 · Valid Accounts</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>Establecer sesión SSH interactiva con la credencial recuperada. Aquí el atacante pasa de «observador externo» a «usuario local en un host interno».</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/01-kill-chain/12-initial-access-ssh.webp" alt="Sesión SSH establecida contra ws-dev-02" loading="lazy">
+            <figcaption>El prompt cambia a <span class="mono">arodriguez@ws-dev-02:~$</span>.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/13-initial-access-ssh-detection.webp" alt="Alerta de autenticación correcta en el dashboard" loading="lazy">
+            <figcaption>Un único <span class="mono">authentication_success</span> con <span class="mono">srcip: 10.10.66.10</span>.</figcaption>
+          </figure>
+        </div>
+
+        <h4>Detección</h4>
+        <p>Aislado, ese evento es nivel 3, informativo. Su criticidad depende del contexto: un login correcto desde la IP de Kali hacia una workstation de desarrollo, <strong>inmediatamente después de 3.027 fallos desde la misma IP</strong>, es la firma canónica de un compromiso por fuerza bruta. Esa correlación temporal es exactamente lo que un ruleset maduro marcaría como alerta compuesta, y es lo que implementa la regla propia <a href="reglas.html">100016</a>, de nivel 14.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="f4">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 4</span><strong>Descubrimiento</strong><span class="mitre">T1082 · T1087.001 · T1057 · T1049</span></div>
+      <div class="phase-body">
+        <h4>Ejecución</h4>
+        <div class="cmd">
+          <div class="cmd-bar"><span>arodriguez@ws-dev-02</span><button type="button">copiar</button></div>
+          <pre>uname -a                           # kernel y hostname
+lsb_release -a                     # distribución
+whoami ; id                        # usuario, UID, GID, grupos
+cat /etc/passwd | grep -v nologin  # usuarios humanos del sistema
+last -n 20 ; w                     # historial y sesiones activas
+ps auxf                            # árbol de procesos
+ss -tulpn                          # servicios a la escucha
+ip a                               # interfaces
+sudo -l                            # privilegios sudo de arodriguez
+crontab -l ; ls -la /etc/cron*     # tareas programadas</pre>
+        </div>
+
+        <h4>Hallazgos</h4>
+        <ul>
+          <li>Host <span class="mono">ws-dev-02</span> con Ubuntu 24.04.1 LTS.</li>
+          <li><span class="mono">arodriguez</span> (UID 1001), miembro del grupo <span class="mono">sudo</span>.</li>
+          <li><span class="mono">sudo -l</span> devuelve <span class="mono">(ALL : ALL) ALL</span>: privilegios sudo completos.</li>
+          <li>Un usuario local adicional, <span class="mono">kevin hernandez</span>, visible en <span class="mono">/etc/passwd</span>.</li>
+          <li>Ningún servicio inusual a la escucha más allá de sshd, y ninguna tarea cron sospechosa todavía.</li>
+        </ul>
+
+        <h4>Detección</h4>
+        <p>auditd registró los comandos en la medida en que las reglas de auditoría los cubrían. El ruleset nativo <strong>no dispara alertas visibles por comandos de descubrimiento individuales</strong>, y es correcto que no lo haga: marcar cada <span class="mono">whoami</span> o cada <span class="mono">ps</span> produciría una tasa de falsos positivos insostenible en operación normal. Dispararon dos excepciones: <span class="mono">sudo -l</span> generó su evento de comando sudo, y la lectura de <span class="mono">/var/run/utmp</span> por parte de <span class="mono">w</span> quedó capturada por el watch de auditd.</p>
+
+        <div class="callout find">
+          <h4>Hueco de detección identificado</h4>
+          <p>Lo que sí es anómalo no es ningún comando por separado, sino <strong>la secuencia</strong>: seis o más comandos de enumeración distintos en menos de un minuto. Esa es la lógica de la regla propia <a href="reglas.html">100020</a>, de nivel 8 con <span class="mono">frequency="6" timeframe="60"</span>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f5">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 5</span><strong>Acceso a credenciales</strong><span class="mitre">T1552.001 · T1552.003 · T1552.004</span></div>
+      <div class="phase-body">
+        <h4>Ejecución</h4>
+        <div class="cmd">
+          <div class="cmd-bar"><span>arodriguez@ws-dev-02</span><button type="button">copiar</button></div>
+          <pre>find /home -type f -name "*.env"   2&gt;/dev/null
+find /home -type f -name "*.key"   2&gt;/dev/null
+find /home -type f -name "notes*"  2&gt;/dev/null
+
+cat ~/.env               # credenciales de base de datos, claves de API
+cat ~/notes.txt          # credenciales en claro de varios sistemas
+cat ~/.ssh/service_key   # clave SSH privada</pre>
+        </div>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/01-kill-chain/14-cat-env.webp" alt="Contenido del fichero .env con credenciales de base de datos" loading="lazy">
+            <figcaption><span class="mono">.env</span>: usuario y contraseña de BD, clave de API.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/15-cat-notes.webp" alt="Contenido del fichero de notas con credenciales en claro" loading="lazy">
+            <figcaption><span class="mono">notes.txt</span>: la credencial de RDP que abre la fase 6.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/16-cat-key.webp" alt="Clave SSH privada encontrada en el host" loading="lazy">
+            <figcaption>Clave privada de servicio para autenticación automatizada.</figcaption>
+          </figure>
+        </div>
+
+        <h4>Credenciales cosechadas</h4>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Credencial</th><th>Origen</th><th>Qué abre</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">devadmin / DevPassw0rd2026!</td><td class="mono">.env</td><td>Base de datos de desarrollo</td></tr>
+              <tr><td class="mono">sk_test_abcdef1234567890</td><td class="mono">.env</td><td>Clave de API</td></tr>
+              <tr><td class="mono">kevin hernandez / Kevin2026!</td><td class="mono">notes.txt</td><td><strong>RDP en WS-DEV-01</strong> — la clave del movimiento lateral</td></tr>
+              <tr><td class="mono">dbandarica / DAniel2026!</td><td class="mono">notes.txt</td><td>Credencial anotada en el fichero, sin servicio asociado en el lab</td></tr>
+              <tr><td class="mono">service_key</td><td class="mono">~/.ssh/</td><td>Autenticación SSH sin contraseña</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4>Detección</h4>
+        <p>Esta fase generó <strong>la menor telemetría de todas las fases activas</strong>. Leer ficheros con <span class="mono">cat</span> produce eventos de syscall pero ninguna regla por defecto los marca, y con razón: un usuario legítimo lee sus propios ficheros constantemente durante su trabajo.</p>
+
+        <div class="callout find">
+          <h4>Hueco de detección identificado</h4>
+          <p>El robo de credenciales de ficheros es una operación silenciosa: no produce error, no arranca ningún servicio y no deja síntoma visible para el usuario. Sin detección explícita, un atacante cosecha todo el material credencial de un host en segundos sin dejar señal en el SIEM. La respuesta es la regla propia <a href="reglas.html">100017</a>: watches de auditd sobre <span class="mono">.env</span>, <span class="mono">notes.txt</span>, <span class="mono">.bash_history</span> y <span class="mono">~/.ssh/</span>, promovidos a nivel 12. Opera a nivel de syscall (<span class="mono">openat</span>, <span class="mono">read</span>), así que es robusta frente a evasiones que eviten <span class="mono">cat</span> o <span class="mono">less</span>: cualquier proceso que abra el fichero dispara el evento.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f6">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 6</span><strong>Movimiento lateral</strong><span class="mitre">T1021.001 · Remote Desktop Protocol</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>Pivotar del punto de apoyo Linux a la workstation Windows del mismo segmento usando las credenciales de la fase 5. Se elige RDP porque el servicio es conocido, la credencial funciona, y la autenticación resultante produce eventos de seguridad de Windows muy detectables.</p>
+
+        <h4>Ejecución</h4>
+        <div class="cmd">
+          <div class="cmd-bar"><span>kali · túnel a través del pivote</span><button type="button">copiar</button></div>
+          <pre># Kali:3389 → ws-dev-02 → WS-DEV-01:3389
+ssh -L 3389:10.10.20.10:3389 arodriguez@10.10.20.20 -N
+
+# y RDP contra uno mismo, que sale por el túnel
+xfreerdp /v:127.0.0.1:3389 /u:"kevin hernandez" /p:'Kevin2026!'</pre>
+        </div>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/01-kill-chain/18-ssh-port-forward.webp" alt="Establecimiento del port forwarding SSH desde Kali" loading="lazy">
+            <figcaption>Túnel SSH establecido a través del host comprometido.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/17-connection-succeded.webp" alt="Confirmación de conexión a través del túnel" loading="lazy">
+            <figcaption>Conexión aceptada.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/19-rdp-tunnel.webp" alt="Cliente RDP conectando a través del túnel" loading="lazy">
+            <figcaption>Cliente RDP apuntando a localhost.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/24-rdp-tunnel-connection-succesfull.webp" alt="Escritorio de Windows 11 de WS-DEV-01 abierto desde Kali" loading="lazy">
+            <figcaption>Escritorio de <span class="mono">WS-DEV-01</span> abierto con la credencial filtrada en el fichero de notas del host Linux.</figcaption>
+          </figure>
+        </div>
+
+        <h4>Detección</h4>
+        <p>Esta fase produjo <strong>la alerta más significativa de todo el escenario</strong>, y no necesitó ninguna regla propia:</p>
+        <ul>
+          <li>El ruleset nativo identificó correctamente la autenticación como <strong>NTLM y no Kerberos</strong>, lo cual es inusual en un entorno de dominio y es indicador canónico de <em>pass-the-hash</em> o reutilización de credenciales.</li>
+          <li>La descripción de la regla incluye el <strong>nombre de la estación de origen: «kali»</strong>. En un SOC de empresa, una workstation llamada <span class="mono">kali</span> entrando por RDP a un host corporativo es escalado inmediato.</li>
+          <li>Nivel 6: suficientemente alto para aparecer en el widget de reglas más disparadas, suficientemente bajo para no fatigar con RDP NTLM legítimo.</li>
+        </ul>
+        <p>Esta alerta sola, en producción, abriría un ticket de investigación de nivel 1 a los pocos minutos de generarse.</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/01-kill-chain/20-rdp-tunnel-detection.webp" alt="Alerta de Wazuh detectando la autenticación NTLM desde el host kali" loading="lazy">
+            <figcaption>Detección nativa: NTLM en lugar de Kerberos, con el nombre de la estación de origen en la descripción.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/23-rdp-tunnel-detection.webp" alt="Detalle del evento de autenticación en el dashboard" loading="lazy">
+            <figcaption>Detalle del evento.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f7">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 7</span><strong>Persistencia por cron</strong><span class="mitre">T1053.003 · Scheduled Task/Job: Cron</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>Recuperar el acceso a <span class="mono">ws-dev-02</span> después de que la sesión actual termine, incluso si se rota la contraseña de <span class="mono">arodriguez</span>. Cron da ejecución periódica que además sobrevive a reinicios.</p>
+
+        <h4>Ejecución</h4>
+        <p>Volviendo a la sesión SSH original, se añade al crontab del usuario una entrada que programa una <em>reverse shell</em> contra Kali en el puerto 4444 cada diez minutos.</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/01-kill-chain/21-cron-persistence.webp" alt="Entrada de cron añadida con una reverse shell" loading="lazy">
+            <figcaption>Entrada en el crontab del usuario con callback periódico.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/22-cron-persistence-detection.webp" alt="Eventos de modificación de cron en el dashboard" loading="lazy">
+            <figcaption>El ruleset nativo cubre la modificación de cron, pero no el patrón que importa.</figcaption>
+          </figure>
+        </div>
+
+        <h4>Detección</h4>
+        <div class="callout find">
+          <h4>Hueco de detección identificado</h4>
+          <p>Wazuh cubre de serie <em>que</em> cron se ha modificado, pero no el patrón concreto de «entrada de cron que contiene una redirección <span class="mono">/dev/tcp/</span>», que es lo que distingue una tarea programada legítima de una puerta trasera. La regla propia <a href="reglas.html">100018</a> apunta a ese patrón de reverse shell en tareas programadas.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="f8">
+    <div class="phase">
+      <div class="phase-head"><span class="pn">Fase 8</span><strong>Persistencia por clave SSH</strong><span class="mitre">T1098.004 · SSH Authorized Keys</span></div>
+      <div class="phase-body">
+        <h4>Objetivo</h4>
+        <p>Un segundo mecanismo, independiente del cron. La autenticación por clave sobrevive a los cambios de contraseña y solo necesita la clave privada del atacante para volver a entrar.</p>
+
+        <div class="figs">
+          <figure>
+            <img src="img-atk/01-kill-chain/25-ssh-persistance.webp" alt="Generación del par de claves del atacante en Kali" loading="lazy">
+            <figcaption>Par de claves generado en Kali.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/26-ssh-persistance-2.webp" alt="Clave pública añadida al authorized_keys del host comprometido" loading="lazy">
+            <figcaption>Pública añadida a <span class="mono">~/.ssh/authorized_keys</span> de <span class="mono">ws-dev-02</span>.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/27-ssh-persistance-3.webp" alt="Login SSH sin contraseña usando la clave del atacante" loading="lazy">
+            <figcaption>Login sin solicitud de contraseña: la persistencia es independiente de la credencial del usuario.</figcaption>
+          </figure>
+          <figure>
+            <img src="img-atk/01-kill-chain/29-ssh-connection.webp" alt="Eventos registrados tras la conexión SSH con clave" loading="lazy">
+            <figcaption>Eventos tras la conexión.</figcaption>
+          </figure>
+        </div>
+
+        <h4>Detección</h4>
+        <p>La modificación de <span class="mono">authorized_keys</span> es un evento de alta señal <em>si</em> hay watches de auditd sobre el directorio <span class="mono">.ssh/</span>. El ruleset nativo cubre el patrón bajo el grupo <span class="mono">ssh_authorized_keys</span> con severidad media, pero las configuraciones por defecto dejan huecos de visibilidad, igual que ocurrió con el crontab. La estrategia de respuesta fue defensa en profundidad: reglas propias (<a href="reglas.html">100019</a>, nivel 12) para las etapas posteriores del ciclo de vida del ataque, de forma que cualquier actividad post-explotación o intento de persistencia secundaria se capture y escale.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="siem">
+    <h2><span class="hn">09</span>Verificación en el SIEM</h2>
+    <p>Al cerrar la cadena se revisó el dashboard SOC L1 completo para catalogar la cobertura de detección que produjo el escenario, widget por widget.</p>
+    <div class="figs">
+      <figure>
+        <img src="img-atk/01-kill-chain/30-dashboard-1.webp" alt="Dashboard SOC L1 tras el escenario, primera parte" loading="lazy">
+        <figcaption>Volumen total y distribución por severidad.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-atk/01-kill-chain/31-dashboard-2.webp" alt="Dashboard SOC L1 tras el escenario, segunda parte" loading="lazy">
+        <figcaption>Línea temporal con el pico del escaneo y reglas más disparadas.</figcaption>
+      </figure>
+      <figure>
+        <img src="img-atk/01-kill-chain/32-dashboard-3.webp" alt="Dashboard SOC L1 tras el escenario, tercera parte" loading="lazy">
+        <figcaption>Cobertura MITRE y autenticaciones fallidas.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="volumen">
+    <h2><span class="hn">10</span>El 86,9 %: el problema real que dejó el escenario</h2>
+    <p>El escenario generó <strong>40.038 alertas</strong> en una ventana de ejecución de unos 90 minutos. Su distribución es la observación operativa más importante de todo el ejercicio.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Alertas</th><th>% del total</th><th>Origen</th><th>Fase</th></tr></thead>
+        <tbody>
+          <tr><td class="mono num">34.828</td><td><strong>86,9 %</strong></td><td>Bloqueo de firewall de pfSense (regla 100010 base + genérica)</td><td>1</td></tr>
+          <tr><td class="mono num">2.321</td><td>5,7 %</td><td>Fallo de autenticación de syslog</td><td>2</td></tr>
+          <tr><td class="mono num">390</td><td>1,0 %</td><td>Fallo de autenticación de usuario de syslog</td><td>2</td></tr>
+          <tr><td class="mono num">337</td><td>0,8 %</td><td>Fallo de login de PAM</td><td>2</td></tr>
+          <tr><td class="mono num">256</td><td>0,7 %</td><td>Regla propia 100011 — VLAN 20 → VLAN 10 bloqueado</td><td>1</td></tr>
+          <tr><td class="mono num">230</td><td>0,6 %</td><td>Regla propia 100012 — VLAN 10 → VLAN 20 bloqueado</td><td>1</td></tr>
+          <tr><td class="mono num">~1.747</td><td>4,4 %</td><td>Windows 4624/4634, Sysmon Process Create, sudo y otros</td><td>3–8</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Una sola fase, el reconocimiento con nmap, produjo el <strong>86,9 % de todas las alertas</strong>. El ataque incluyó eventos de alta señal en cada fase posterior (compromiso exitoso, robo de credenciales, movimiento lateral, persistencia), y todos quedan numéricamente sepultados bajo el ruido de los descartes del firewall.</p>
+
+    <p>En un SOC real esto es <strong>fatiga de alertas del máximo orden</strong>. Un analista de nivel 1 viendo un panel con 40.038 alertas no podría identificar los seis o siete eventos realmente críticos (el RDP lateral, la modificación de <span class="mono">authorized_keys</span>, el login correcto desde una IP de Kali) sin un triaje largo.</p>
+
+    <h3>Por qué pasó</h3>
+    <p>El comportamiento por defecto de Wazuh ante los bloqueos de pfSense es emitir una alerta por paquete bloqueado. Durante el escaneo SYN sobre 254 hosts y seis puertos, más la enumeración de servicios, decenas de miles de paquetes TCP intentaron atravesar el firewall. La regla 100010 dispara a nivel 3 por evento, sin lógica de agregación.</p>
+
+    <div class="callout">
+      <h4>Esto no es un defecto de la regla 100010</h4>
+      <p>Funciona exactamente como se diseñó: da visibilidad cruda por paquete para consultas de archivo y análisis forense. El defecto está en <strong>la capa operativa de alertas</strong>, que debería filtrar o agregar antes de llegar al panel que usa el analista para triaje.</p>
+    </div>
+
+    <h3>El resultado positivo que hay dentro de las cifras</h3>
+    <p>La regla propia <strong>100011 disparó 256 veces</strong> y la <strong>100012, 230 veces</strong>. Ambas se escribieron antes del escenario para detectar violaciones de segmentación con nivel elevado y mapeo MITRE, y el hecho de que dispararan confirma que la ingeniería de detección previa funciona bajo condiciones de ataque real. Las 486 alertas de esas dos reglas serían el foco natural de la investigación en producción: llevan mapeo MITRE, severidad elevada y describen específicamente violaciones de política de segmentación. No se pierden en el ruido <em>si</em> el analista filtra por severidad o por táctica. El problema es que la vista por defecto del panel no filtra.</p>
+
+    <h3>Las ocho reglas que salieron de aquí</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Regla</th><th>Qué agrega o detecta</th><th>Táctica</th><th>Hueco de la fase</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">100013</td><td>Agregación de escaneo de puertos (un objetivo)</td><td>Reconnaissance</td><td>1</td></tr>
+          <tr><td class="mono">100014</td><td>Agregación de escaneo multiobjetivo</td><td>Reconnaissance</td><td>1</td></tr>
+          <tr><td class="mono">100015</td><td>Agregación de fuerza bruta SSH</td><td>Credential Access</td><td>2</td></tr>
+          <tr><td class="mono">100016</td><td>Correlación compuesta: fuerza bruta seguida de éxito</td><td>Initial Access</td><td>3</td></tr>
+          <tr><td class="mono">100017</td><td>Acceso a ficheros de credenciales</td><td>Credential Access</td><td>5</td></tr>
+          <tr><td class="mono">100018</td><td>Reverse shell en cron</td><td>Persistence</td><td>7</td></tr>
+          <tr><td class="mono">100019</td><td>Modificación de <span class="mono">authorized_keys</span></td><td>Persistence</td><td>8</td></tr>
+          <tr><td class="mono">100020</td><td>Secuencia de comandos de descubrimiento</td><td>Discovery</td><td>4</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Cada una está documentada con su modelo de amenaza, umbrales justificados, mapeo MITRE y análisis de falsos positivos en el <a href="reglas.html">catálogo de detecciones</a>.</p>
+  </section>
+
+  <section id="lecciones">
+    <h2><span class="hn">11</span>Lecciones</h2>
+    <ul>
+      <li><strong>Una regla propia hay que operativizarla, no solo escribirla.</strong> La 100011 disparó correctamente con su mapeo MITRE, y aun así 34.828 alertas de bajo valor dominaron el panel. Escribir la regla es el 30 % de la ingeniería de detección; hacerla visible bajo volúmenes de producción es el otro 70 %.</li>
+      <li><strong>La fatiga de alertas no es un concepto teórico.</strong> El escenario produjo un ejemplo real del fenómeno en una única ejecución de 90 minutos. El instinto de un analista junior de querer ver todos los eventos choca con la realidad operativa: la visibilidad exige filtrado.</li>
+      <li><strong>La agregación no es opcional en producción.</strong> El patrón <span class="mono">frequency</span>/<span class="mono">timeframe</span> es práctica estándar en cualquier despliegue maduro de Wazuh. Su ausencia en el ruleset inicial se identificó por experiencia operativa y no leyendo documentación, que es un aprendizaje más sólido.</li>
+      <li><strong>El ruleset nativo cubre bastante.</strong> La detección de RDP por NTLM no necesitó ninguna regla propia. La ingeniería de detección debe centrarse en los huecos, no duplicar lo que ya funciona.</li>
+      <li><strong>Documentar las debilidades vale más que ocultarlas.</strong> Las 40.038 alertas son una debilidad demostrable del montaje. Documentarla, cuantificarla y proponer mejoras concretas da más credibilidad que omitirla.</li>
+      <li><strong>Cada fase de ataque debe corresponder a una pregunta de detección.</strong> Para cada una de las ocho fases activas, la pregunta «¿lo ve el SIEM?» tuvo una respuesta clara de sí o no con evidencia concreta. Las fases donde la respuesta fue «no lo suficiente» son exactamente las que generaron el trabajo de ingeniería de detección.</li>
+    </ul>
+
+    <div class="prevnext">
+      <a class="btn btn-ghost btn-sm" href="infraestructura.html">← Montaje del lab</a>
+      <a class="btn btn-primary btn-sm" href="ataque-02.html">Escenario 02: insider hasta dominio comprometido →</a>
+    </div>
+  </section>
+
+  </main>
+</div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-note">
+      <span>Entorno de laboratorio aislado. Todas las credenciales mostradas son sintéticas y pertenecen a VMs que ya no existen.</span>
+    </div>
+  </div>
+</footer>
+<script src="js/site.js"></script>
+</body>
+</html>
